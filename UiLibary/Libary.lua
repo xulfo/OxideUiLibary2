@@ -193,13 +193,15 @@ local ThemeColors = {
 local function buildPerfPanelV2(ctx)
     local OxideOnTop, RightContainer, ThemeColors, TweenService, RunService, UserInputService, trackCleanup = ctx.OxideOnTop, ctx.RightContainer, ctx.ThemeColors, ctx.TweenService, ctx.RunService, ctx.UserInputService, ctx.trackCleanup
     local isDestroyedRef = ctx.isDestroyedRef
-    local bottomMargin, panelGap, PROFILE_TWEEN = ctx.bottomMargin, ctx.panelGap, ctx.PROFILE_TWEEN
+    local bottomMargin, panelGap = ctx.bottomMargin, ctx.panelGap
+    local PROFILE_TWEEN = ctx.PROFILE_TWEEN or TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    local safeBottomMargin = tonumber(bottomMargin) or 18
     local perfWidth, perfHeight = 266, 294
-    local perfOpenPos = UDim2.new(1, -18, 1, -bottomMargin)
-    local perfClosedPos = UDim2.new(1, perfWidth + 36, 1, -bottomMargin)
+    local perfOpenPos = UDim2.new(1, -18, 1, -safeBottomMargin)
+    local perfClosedPos = UDim2.new(1, perfWidth + 36, 1, -safeBottomMargin)
     local function corner(p,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r); c.Parent=p; return c end
     local function stroke(p,col) local s=Instance.new("UIStroke"); s.Color=col or ThemeColors.Border; s.Thickness=1; s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border; s.Parent=p; return s end
-    local perfPanel = Instance.new("CanvasGroup"); perfPanel.Name="LivePerformance"; perfPanel.AnchorPoint=Vector2.new(1,1); perfPanel.Position=perfClosedPos; perfPanel.Size=UDim2.fromOffset(perfWidth, perfHeight); perfPanel.BackgroundColor3=ThemeColors.BackgroundTop; perfPanel.GroupTransparency=1; perfPanel.ZIndex=149; perfPanel.Parent=OxideOnTop; corner(perfPanel,14); stroke(perfPanel, ThemeColors.Border); perfPanel.ClipsDescendants=true
+    local perfPanel = Instance.new("CanvasGroup"); perfPanel.Name="LivePerformance"; perfPanel.AnchorPoint=Vector2.new(1,1); perfPanel.Position=perfClosedPos; perfPanel.Size=UDim2.fromOffset(perfWidth, perfHeight); perfPanel.BackgroundColor3=ThemeColors.BackgroundTop; perfPanel.GroupTransparency=1; perfPanel.Visible=false; perfPanel.ZIndex=149; perfPanel.Parent=OxideOnTop; corner(perfPanel,14); stroke(perfPanel, ThemeColors.Border); perfPanel.ClipsDescendants=true
     local perfHeader = Instance.new("Frame", perfPanel); perfHeader.Size=UDim2.new(1,0,0,56); perfHeader.BackgroundTransparency=1; perfHeader.ZIndex=150
     local perfTitle = Instance.new("TextLabel", perfHeader); perfTitle.Text="LIVE PERFORMANCE"; perfTitle.Font=Enum.Font.GothamBold; perfTitle.TextSize=12; perfTitle.TextColor3=Color3.fromRGB(255,255,255); perfTitle.TextXAlignment=Enum.TextXAlignment.Left; perfTitle.BackgroundTransparency=1; perfTitle.Position=UDim2.fromOffset(16,11); perfTitle.Size=UDim2.new(1,-94,0,17); perfTitle.ZIndex=151
     local perfSub = Instance.new("TextLabel", perfHeader); perfSub.Text="Real-time frame tracker"; perfSub.Font=Enum.Font.Gotham; perfSub.TextSize=9; perfSub.TextColor3=Color3.fromRGB(139,139,139); perfSub.TextXAlignment=Enum.TextXAlignment.Left; perfSub.BackgroundTransparency=1; perfSub.Position=UDim2.fromOffset(16,31); perfSub.Size=UDim2.new(1,-94,0,13); perfSub.ZIndex=151
@@ -228,9 +230,21 @@ local function buildPerfPanelV2(ctx)
         open = open == true
         instant = instant == true
         perfOpen = open
-        local pos=open and perfOpenPos or perfClosedPos
-        local tr=open and 0 or 1
-        if instant then perfPanel.Position=pos; perfPanel.GroupTransparency=tr else TweenService:Create(perfPanel, PROFILE_TWEEN, {Position=pos, GroupTransparency=tr}):Play() end
+        local pos = open and perfOpenPos or perfClosedPos
+        local tr = open and 0 or 1
+        -- Never tween an off-screen, visible panel: some clients report a
+        -- visible-bounds warning and reject the Position assignment. Reveal
+        -- at the valid position, then animate only transparency.
+        perfPanel.Visible = open
+        perfPanel.Position = pos
+        local ok, tween = pcall(function()
+            return TweenService:Create(perfPanel, PROFILE_TWEEN, {GroupTransparency=tr})
+        end)
+        if instant or not ok or not tween then
+            perfPanel.GroupTransparency = tr
+        else
+            tween:Play()
+        end
         if ctx.perfToggleBtn then ctx.perfToggleBtn.BackgroundColor3=open and Color3.fromRGB(36,36,36) or Color3.fromRGB(42,42,42) end
     end
     perfCloseBtn.MouseButton1Click:Connect(function() setPerfVisible(false) end)
@@ -266,15 +280,18 @@ end
 local function buildMusicPanelV2(ctx)
     local OxideOnTop, RightContainer, ThemeColors, TweenService, RunService, UserInputService, trackCleanup = ctx.OxideOnTop, ctx.RightContainer, ctx.ThemeColors, ctx.TweenService, ctx.RunService, ctx.UserInputService, ctx.trackCleanup
     local isDestroyedRef = ctx.isDestroyedRef
-    local bottomMargin, panelGap, PROFILE_TWEEN = ctx.bottomMargin, ctx.panelGap, ctx.PROFILE_TWEEN
+    local bottomMargin, panelGap = ctx.bottomMargin, ctx.panelGap
+    local PROFILE_TWEEN = ctx.PROFILE_TWEEN or TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    local safeBottomMargin = tonumber(bottomMargin) or 18
+    local safePanelGap = tonumber(panelGap) or 12
     local perfHeight = 294
     local MUSIC_FOLDER="OxideMusic"
     local musicWidth, musicHeight=312,416
-    local musicOpenPos=UDim2.new(1,-18,1,-(bottomMargin+perfHeight+panelGap))
-    local musicClosedPos=UDim2.new(1,musicWidth+36,1,-(bottomMargin+perfHeight+panelGap))
+    local musicOpenPos=UDim2.new(1,-18,1,-(safeBottomMargin+perfHeight+safePanelGap))
+    local musicClosedPos=UDim2.new(1,musicWidth+36,1,-(safeBottomMargin+perfHeight+safePanelGap))
     local function corner(p,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r); c.Parent=p; return c end
     local function stroke(p,col) local s=Instance.new("UIStroke"); s.Color=col or ThemeColors.Border; s.Thickness=1; s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border; s.Parent=p; return s end
-    local musicPanel=Instance.new("CanvasGroup"); musicPanel.Name="MusicPlayer"; musicPanel.AnchorPoint=Vector2.new(1,1); musicPanel.Position=musicClosedPos; musicPanel.Size=UDim2.fromOffset(musicWidth,musicHeight); musicPanel.BackgroundColor3=ThemeColors.BackgroundTop; musicPanel.GroupTransparency=1; musicPanel.ZIndex=150; musicPanel.Parent=OxideOnTop; corner(musicPanel,14); stroke(musicPanel, ThemeColors.Border); musicPanel.ClipsDescendants=true
+    local musicPanel=Instance.new("CanvasGroup"); musicPanel.Name="MusicPlayer"; musicPanel.AnchorPoint=Vector2.new(1,1); musicPanel.Position=musicClosedPos; musicPanel.Size=UDim2.fromOffset(musicWidth,musicHeight); musicPanel.BackgroundColor3=ThemeColors.BackgroundTop; musicPanel.GroupTransparency=1; musicPanel.Visible=false; musicPanel.ZIndex=150; musicPanel.Parent=OxideOnTop; corner(musicPanel,14); stroke(musicPanel, ThemeColors.Border); musicPanel.ClipsDescendants=true
     local musicHeader=Instance.new("Frame", musicPanel); musicHeader.Size=UDim2.new(1,0,0,56); musicHeader.BackgroundTransparency=1
     local mTitle=Instance.new("TextLabel", musicHeader); mTitle.Text="MUSIC PLAYER"; mTitle.Font=Enum.Font.GothamBold; mTitle.TextSize=13; mTitle.TextColor3=Color3.fromRGB(255,255,255); mTitle.TextXAlignment=Enum.TextXAlignment.Left; mTitle.BackgroundTransparency=1; mTitle.Position=UDim2.fromOffset(16,12); mTitle.Size=UDim2.new(1,-80,0,18); mTitle.ZIndex=152
     local mSub=Instance.new("TextLabel", musicHeader); mSub.Text=MUSIC_FOLDER; mSub.Font=Enum.Font.Gotham; mSub.TextSize=10; mSub.TextColor3=Color3.fromRGB(139,139,139); mSub.TextXAlignment=Enum.TextXAlignment.Left; mSub.BackgroundTransparency=1; mSub.Position=UDim2.fromOffset(16,30); mSub.Size=UDim2.new(1,-80,0,14); mSub.ZIndex=152
@@ -306,9 +323,20 @@ local function buildMusicPanelV2(ctx)
     local musicOpen=false
     local function setMusicVisible(v,instant)
         musicOpen=v==true
-        local tp=musicOpen and musicOpenPos or musicClosedPos
-        local tr=musicOpen and 0 or 1
-        if instant then musicPanel.Position=tp; musicPanel.GroupTransparency=tr else TweenService:Create(musicPanel, PROFILE_TWEEN, {Position=tp, GroupTransparency=tr}):Play() end
+        local tp = musicOpen and musicOpenPos or musicClosedPos
+        local tr = musicOpen and 0 or 1
+        -- Keep the panel hidden whenever it is moved off-screen, and only
+        -- tween transparency after it has been placed safely.
+        musicPanel.Visible = musicOpen
+        musicPanel.Position = tp
+        local ok, tween = pcall(function()
+            return TweenService:Create(musicPanel, PROFILE_TWEEN, {GroupTransparency=tr})
+        end)
+        if instant or not ok or not tween then
+            musicPanel.GroupTransparency = tr
+        else
+            tween:Play()
+        end
         if ctx.musicToggleBtn then ctx.musicToggleBtn.BackgroundColor3=musicOpen and Color3.fromRGB(36,36,36) or Color3.fromRGB(42,42,42) end
     end
     musicCloseBtn2.MouseButton1Click:Connect(function() setMusicVisible(false) end)
@@ -2106,33 +2134,6 @@ function Oxide:Window(GuiConfig)
         DropShadowHolder.Visible = true
         MinimizedBar.Visible = false
     end)
-
-    -- K-key toggle for performance + music panels
-    local panelsToggled = false
-    trackCleanup(UserInputService.InputBegan:Connect(function(input, gp)
-        if gp then return end
-        if input.KeyCode == Enum.KeyCode.K then
-            panelsToggled = not panelsToggled
-            -- LivePerformance
-            local perf = OxideOnTop:FindFirstChild("LivePerformance")
-            if perf then
-                perf.Visible = panelsToggled
-                perf.GroupTransparency = panelsToggled and 0 or 1
-                -- Position handled by buildPerfPanelV2; do not assign here (vars out of scope)
-            end
-            -- MusicPlayer
-            local music = OxideOnTop:FindFirstChild("MusicPlayer")
-            if music then
-                music.Visible = panelsToggled
-                music.GroupTransparency = panelsToggled and 0 or 1
-                -- Position handled by buildMusicPanelV2; do not assign here
-                -- also update the music toggle button visual
-                if ctx and ctx.musicToggleBtn then
-                    ctx.musicToggleBtn.BackgroundColor3 = panelsToggled and Color3.fromRGB(36,36,36) or Color3.fromRGB(42,42,42)
-                end
-            end
-        end
-    end))
 
     -- Live client tracker (koyeb-style) — minimal ping/FPS pill
 
@@ -5836,7 +5837,7 @@ function Oxide:Window(GuiConfig)
             isDestroyedRef = function() return isDestroyed end,
             bottomMargin = 18,
             panelGap = 12,
-            PROFILE_TWEEN = PROFILE_TWEEN,
+            PROFILE_TWEEN = TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
         }
         pcall(buildPerfPanelV2, ctx)
         pcall(buildMusicPanelV2, ctx)
