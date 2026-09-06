@@ -530,6 +530,8 @@ pcall(function() PlotState = require(RS.Client.PlotState) end)
 pcall(function() AreasData = require(RS.Data.Areas) end)
 pcall(function() RarityData = require(RS.Data.Rarity) end)
 pcall(function() AssetsData = require(RS.Data.Assets) end)
+local SaveModule
+pcall(function() SaveModule = require(RS.Shared.Save) end)
 pcall(function() EggToolDisplay = require(RS.Shared.Eggs.EggToolDisplay) end)
 pcall(function()
     AreaEggSlotIdentity = (RS:FindFirstChild("Shared") and RS.Shared:FindFirstChild("Util") and require(RS.Shared.Util.AreaEggSlotIdentity))
@@ -1008,6 +1010,17 @@ local autoSellPets              = false
 local autoSellEggs              = false
 local selectedSellPetRarities   = {}
 local selectedSellEggRarities   = {}
+
+-- When no rarity filter is picked, only sell low-tier items (the default list
+-- from the working satchel seller) instead of everything in the inventory.
+local DEFAULT_LOW_TIER_SELL = {
+    ["Common"] = true, ["Uncommon"] = true, ["Rare"] = true,
+    ["Epic"] = true, ["Legendary"] = true, ["Mythic"] = true,
+}
+local function getSellRarityFilter(selected)
+    if not selected or next(selected) == nil then return DEFAULT_LOW_TIER_SELL end
+    return selected
+end
 
 local instantPickupEnabled      = true
 local noKnockbackEnabled        = true
@@ -1876,7 +1889,7 @@ local function SellSelectedPets()
     for uid, petData in pairs(inv) do
         if type(petData) == "table" and not petData.Locked then
             local rName = petData.Rarity or "Common"
-            if isRarityAllowed(rName, selectedSellPetRarities) then
+            if isRarityAllowed(rName, getSellRarityFilter(selectedSellPetRarities)) then
                 pcall(function() re:FireServer(uid) end)
                 task.wait(0.08)
             end
@@ -1885,19 +1898,24 @@ local function SellSelectedPets()
 end
 
 local function SellSelectedEggs()
-    local rf = GetNetRemote("RF/PenRoster/AskSale")
-    if not rf or not EggState or not EggState.ReadOwnedEggs then return end
-    local ok, snapshot = pcall(EggState.ReadOwnedEggs, LP.UserId)
-    if not ok or not snapshot then return end
-    local records = snapshot.Records or snapshot
-    if type(records) ~= "table" then return end
+    if not SaveModule then return end
+    local save = nil
+    pcall(function() save = SaveModule.Get and SaveModule.Get() end)
+    if not save then return end
+    local inv = save.EggInventory
+    if type(inv) ~= "table" then return end
 
-    for uid, eggData in pairs(records) do
-        if type(eggData) == "table" and not eggData.Locked then
+    local wear = GetNetRemote("RF/EggWorld/AskWearTool")
+    local sell = GetNetRemote("RE/PetSatchel/SellPet")
+    if not wear or not sell then return end
+
+    for uid, eggData in pairs(inv) do
+        if type(eggData) == "table" and not eggData.Placement and not eggData.Locked then
             local rName = GetEggRarityInfo(eggData)
-            if isRarityAllowed(rName, selectedSellEggRarities) then
-                pcall(function() rf:InvokeServer(uid) end)
-                task.wait(0.08)
+            if isRarityAllowed(rName, getSellRarityFilter(selectedSellEggRarities)) then
+                pcall(function() wear:InvokeServer(uid) end)
+                pcall(function() sell:FireServer({ uid }) end)
+                task.wait(0.1)
             end
         end
     end
