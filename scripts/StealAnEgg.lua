@@ -1017,6 +1017,7 @@ local DEFAULT_LOW_TIER_SELL = {
     ["Common"] = true, ["Uncommon"] = true, ["Rare"] = true,
     ["Epic"] = true, ["Legendary"] = true, ["Mythic"] = true,
 }
+local SELL_REQUEST_DELAY = 0.1
 local function getSellRarityFilter(selected)
     if not selected or next(selected) == nil then return DEFAULT_LOW_TIER_SELL end
     return selected
@@ -1915,7 +1916,7 @@ local function SellSelectedEggs()
             if isRarityAllowed(rName, getSellRarityFilter(selectedSellEggRarities)) then
                 pcall(function() wear:InvokeServer(uid) end)
                 pcall(function() sell:FireServer({ uid }) end)
-                task.wait(0.1)
+                task.wait(SELL_REQUEST_DELAY)
             end
         end
     end
