@@ -25,6 +25,7 @@ local GAME_NAMES = {
     [142823291]        = "MM2",
     [106484206883664]  = "DungeonLootr.lua",
     [126870639873289]  = "JumpForPets.lua",
+    [128736949265057]  = "Gakuran",
 }
 
 -- Always use the stable public library.
@@ -68,6 +69,7 @@ local GAME_MAP = {
     [142823291]        = "Mm2.lua",                 -- MM2 🔪
     [106484206883664]  = "DungeonLootr.lua",        -- Dungeon-Lootr ⚔️
     [126870639873289]  = "JumpForPets.lua",
+    [128736949265057]  = "Gakuran.lua",             -- Gakuran 🥋
     -- [PlaceId] = "Script.lua",  ← füg neue Games hier hinzu
 }
 
@@ -111,11 +113,6 @@ local function Track(kind)
         end
     end)
 end
-
--- Games that are NOT part of the free hub — they need a paid key (PremiumGate).
-local PREMIUM_ONLY = {
-    [128736949265057] = "Gakuran.lua", -- Gakuran 🥋 (premium-only)
-}
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- FETCH: downloads a text file from a URL (tries request() then game.HttpGet)
@@ -198,11 +195,6 @@ end
 local placeId = game.PlaceId
 local gameId = game.GameId
 local scriptName = ResolveScript(placeId, gameId)
-
-if PREMIUM_ONLY[placeId] then
-    print("[Loader] " .. PREMIUM_ONLY[placeId] .. " is premium-only — load PremiumGate.lua with a key instead.")
-    return
-end
 
 print("[Loader] PlaceId:", placeId, " GameId:", gameId, "→", scriptName)
 print("[Loader] Downloading library...")
