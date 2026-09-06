@@ -226,7 +226,9 @@ local function buildPerfPanelV2(ctx)
     local maxLabel=Instance.new("TextLabel", statsStrip); maxLabel.Text="Max --"; maxLabel.Font=Enum.Font.GothamMedium; maxLabel.TextSize=10; maxLabel.TextColor3=Color3.fromRGB(200,200,200); maxLabel.BackgroundTransparency=1; maxLabel.AnchorPoint=Vector2.new(1,0); maxLabel.Position=UDim2.new(1,-10,0,8); maxLabel.Size=UDim2.new(0.33,-10,0,14); maxLabel.TextXAlignment=Enum.TextXAlignment.Right; maxLabel.ZIndex=151
     local perfOpen=false
     local function setPerfVisible(open, instant)
-        perfOpen=open==true
+        open = open == true
+        instant = instant == true
+        perfOpen = open
         local pos=open and perfOpenPos or perfClosedPos
         local tr=open and 0 or 1
         if instant then perfPanel.Position=pos; perfPanel.GroupTransparency=tr else TweenService:Create(perfPanel, PROFILE_TWEEN, {Position=pos, GroupTransparency=tr}):Play() end
