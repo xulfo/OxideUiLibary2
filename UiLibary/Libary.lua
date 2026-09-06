@@ -2117,14 +2117,14 @@ function Oxide:Window(GuiConfig)
             if perf then
                 perf.Visible = panelsToggled
                 perf.GroupTransparency = panelsToggled and 0 or 1
-                perf.Position = panelsToggled and perfOpenPos or perfClosedPos
+                -- Position handled by panel build; toggle visibility only here
             end
             -- MusicPlayer
             local music = OxideOnTop:FindFirstChild("MusicPlayer")
             if music then
                 music.Visible = panelsToggled
                 music.GroupTransparency = panelsToggled and 0 or 1
-                music.Position = panelsToggled and musicOpenPos or musicClosedPos
+                -- Position handled by panel build; toggle visibility only here
                 -- also update the music toggle button visual
                 if ctx and ctx.musicToggleBtn then
                     ctx.musicToggleBtn.BackgroundColor3 = panelsToggled and Color3.fromRGB(36,36,36) or Color3.fromRGB(42,42,42)
