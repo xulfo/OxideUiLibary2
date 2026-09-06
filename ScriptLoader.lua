@@ -1,19 +1,16 @@
 -- ══════════════════════════════════════════════════════════════════════════════
 -- OXIDE HUB — Universal ScriptLoader (free)
 -- Checks game.PlaceId → loads library ONCE → downloads & runs the right script.
--- Everything is served by the Oxide backend worker (no public repo anymore).
+-- Fully open source: everything is plain Lua on GitHub, no encryption.
 -- ══════════════════════════════════════════════════════════════════════════════
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- CONFIG
 -- ══════════════════════════════════════════════════════════════════════════════
 local CFG = {
-    LIB_URL      = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/lib.enc",
+    LIB_URL      = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/UiLibary/Libary.lua",
     -- Base URL for stripped game scripts (github raw).
     SCRIPTS_BASE = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/scripts/",
-    -- If you want to use an unencrypted plain Lua library instead of the
-    -- encrypted lib.enc above, point LIB_URL at the plain UiLibary/Libary.lua
-    -- path instead. Only one LIB_URL is active at a time.
     -- Fallback script when PlaceId doesn't match any known game
     FALLBACK  = "Universal.lua",
 }
@@ -143,62 +140,15 @@ local function FetchText(url)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
--- BASE64 DECODER (pure Lua, no dependencies)
--- ══════════════════════════════════════════════════════════════════════════════
-local function b64decode(s)
-    local map, alphabet = {}, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-    for i = 1, #alphabet do map[alphabet:sub(i, i)] = i - 1 end
-    local out, n = {}, 0
-    for i = 1, #s, 4 do
-        local a, b = map[s:sub(i, i)], map[s:sub(i + 1, i + 1)]
-        local c, d = map[s:sub(i + 2, i + 2)], map[s:sub(i + 3, i + 3)]
-        if a and b then
-            n = n + 1; out[n] = string.char(a * 4 + math.floor(b / 16))
-            if c then
-                n = n + 1; out[n] = string.char((b % 16) * 16 + math.floor(c / 4))
-                if d then
-                    n = n + 1; out[n] = string.char((c % 4) * 64 + d)
-                end
-            end
-        end
-    end
-    return table.concat(out)
-end
-
--- ══════════════════════════════════════════════════════════════════════════════
--- XOR DECRYPT — uses bit32.bxor (Luau native, NOT Lua 5.3 ~ operator!)
--- The key is reconstructed from bytes at runtime so it never appears as a
--- readable string in this file.
--- ══════════════════════════════════════════════════════════════════════════════
-local function xorDecrypt(b64, key)
-    local data = b64decode(b64)
-    local out, kl = {}, #key
-    for i = 1, #data do
-        out[i] = string.char(bit32.bxor(data:byte(i), key:byte(((i - 1) % kl) + 1)))
-    end
-    return table.concat(out)
-end
-
-local LIB_KEY_BYTES = {23, 32, 51, 51, 44, 120, 25, 60, 55, 120, 103, 101, 103, 99, 120, 13, 44, 15, 116}
-local function buildLibKey()
-    local k = {}
-    for i = 1, #LIB_KEY_BYTES do
-        k[i] = string.char(bit32.bxor(LIB_KEY_BYTES[i], 85))
-    end
-    return table.concat(k)
-end
-
--- ══════════════════════════════════════════════════════════════════════════════
--- LOAD LIBRARY (download encrypted blob → decrypt → loadstring → execute)
+-- LOAD LIBRARY (download raw source → loadstring → execute)
+-- Now fully open source: the library is served as plain Lua, no encryption.
 -- ══════════════════════════════════════════════════════════════════════════════
 local function LoadLibrary()
-    local libUrl = CFG.LIB_URL
-    local ok, b64 = FetchText(libUrl)
+    local ok, source = FetchText(CFG.LIB_URL)
     if not ok then
-        error("[Loader] Failed to download library blob from the backend.", 0)
+        error("[Loader] Failed to download library source.", 0)
     end
 
-    local source = xorDecrypt(b64, buildLibKey())
     local chunk, compileErr = loadstring(source)
     if not chunk then
         error("[Loader] Library compile error: " .. tostring(compileErr), 0)
