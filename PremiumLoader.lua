@@ -6,8 +6,7 @@
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local CFG = {
-    LIB_URL  = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/lib.enc",
-    LIB_KEY  = "Buffy-Lib-2026-XyZ!",
+    LIB_URL  = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/UiLibary/Libary.lua",
     SCRIPTS_BASE = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/scripts",
     FALLBACK  = "Universal.lua",
 }
@@ -39,42 +38,16 @@ local function FetchText(url)
     return false, nil
 end
 
-local function b64decode(s)
-    local map, alphabet = {}, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-    for i = 1, #alphabet do map[alphabet:sub(i, i)] = i - 1 end
-    local out, n = {}, 0
-    for i = 1, #s, 4 do
-        local a, b = map[s:sub(i, i)], map[s:sub(i + 1, i + 1)]
-        local c, d = map[s:sub(i + 2, i + 2)], map[s:sub(i + 3, i + 3)]
-        if a and b then
-            n = n + 1; out[n] = string.char(a * 4 + math.floor(b / 16))
-            if c then
-                n = n + 1; out[n] = string.char((b % 16) * 16 + math.floor(c / 4))
-                if d then
-                    n = n + 1; out[n] = string.char((c % 4) * 64 + d)
-                end
-            end
-        end
-    end
-    return table.concat(out)
-end
-
-local function xorDecrypt(b64, key)
-    local data = b64decode(b64)
-    local out, kl = {}, #key
-    for i = 1, #data do
-        out[i] = string.char(bit32.bxor(data:byte(i), key:byte(((i - 1) % kl) + 1)))
-    end
-    return table.concat(out)
-end
-
+-- ══════════════════════════════════════════════════════════════════════════════
+-- LOAD LIBRARY (download raw source → loadstring → execute)
+-- Now fully open source: the library is served as plain Lua, no encryption.
+-- ══════════════════════════════════════════════════════════════════════════════
 local function LoadLibrary()
-    local ok, b64 = FetchText(CFG.LIB_URL)
+    local ok, source = FetchText(CFG.LIB_URL)
     if not ok then
-        error("[PremiumLoader] Failed to download library blob from Codeberg.", 0)
+        error("[PremiumLoader] Failed to download library source.", 0)
     end
 
-    local source = xorDecrypt(b64, CFG.LIB_KEY)
     local chunk, compileErr = loadstring(source)
     if not chunk then
         error("[PremiumLoader] Library compile error: " .. tostring(compileErr), 0)
