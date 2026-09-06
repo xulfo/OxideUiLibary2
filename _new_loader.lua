@@ -58,10 +58,7 @@ local GAME_MAP = {
     [142823291]        = "Mm2.lua",
     [106484206883664]  = "DungeonLootr.lua",
     [126870639873289]  = "JumpForPets.lua",
-}
-
-local PREMIUM_ONLY = {
-    [128736949265057] = "Gakuran.lua",
+    [128736949265057]  = "Gakuran.lua",
 }
 
 local function ResolveScript(pid)
@@ -70,11 +67,6 @@ end
 
 local placeId = game.PlaceId
 local scriptName = ResolveScript(placeId)
-
-if PREMIUM_ONLY[placeId] then
-    warn("[Loader] " .. PREMIUM_ONLY[placeId] .. " is premium-only.")
-    return
-end
 
 local Library = LoadLibrary()
 _G.OxideLib = Library
