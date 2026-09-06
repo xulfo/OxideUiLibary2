@@ -24,7 +24,7 @@ local GAME_NAMES = {
     [2788229376]       = "Da Hood",
     [142823291]        = "MM2",
     [106484206883664]  = "DungeonLootr.lua",
-    [126870639873289]  = "JumpForPets.lua",
+    [126870639873289]  = "Jump for Pets",
     [128736949265057]  = "Gakuran",
 }
 
@@ -68,7 +68,7 @@ local GAME_MAP = {
     [2788229376]       = "DaHood.lua",              -- Da Hood 🏙️
     [142823291]        = "Mm2.lua",                 -- MM2 🔪
     [106484206883664]  = "DungeonLootr.lua",        -- Dungeon-Lootr ⚔️
-    [126870639873289]  = "JumpForPets.lua",
+    [126870639873289]  = "JumpForPets.lua",         -- Jump for Pets 🐾
     [128736949265057]  = "Gakuran.lua",             -- Gakuran 🥋
     -- [PlaceId] = "Script.lua",  ← füg neue Games hier hinzu
 }
