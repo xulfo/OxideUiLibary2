@@ -1,5 +1,4 @@
 local HttpService = game:GetService("HttpService")
-local TAG_BASE_URL = "https://adorable-sallyanne-fgdfgdfgd-b2d051be.koyeb.app"
 
 pcall(function()
     if not isfolder("Oxide") then
@@ -2119,14 +2118,14 @@ function Oxide:Window(GuiConfig)
             if perf then
                 perf.Visible = panelsToggled
                 perf.GroupTransparency = panelsToggled and 0 or 1
-                -- Position handled by panel build; toggle visibility only here
+                perf.Position = panelsToggled and perfOpenPos or perfClosedPos
             end
             -- MusicPlayer
             local music = OxideOnTop:FindFirstChild("MusicPlayer")
             if music then
                 music.Visible = panelsToggled
                 music.GroupTransparency = panelsToggled and 0 or 1
-                -- Position handled by panel build; toggle visibility only here
+                music.Position = panelsToggled and musicOpenPos or musicClosedPos
                 -- also update the music toggle button visual
                 if ctx and ctx.musicToggleBtn then
                     ctx.musicToggleBtn.BackgroundColor3 = panelsToggled and Color3.fromRGB(36,36,36) or Color3.fromRGB(42,42,42)
