@@ -15,7 +15,7 @@
 
 local CFG = {
     KEY_API      = "https://oxide-premium-api.xulfo.deno.net",
-    LIB_URL      = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/lib.enc",
+    LIB_URL      = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/UiLibary/Libary.lua",
 }
 
 local Players = game:GetService("Players")
@@ -153,7 +153,8 @@ local function kickFromGame(msg)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
--- LIBRARY LOADER (encrypted blob → decrypt → loadstring → execute)
+-- LIBRARY LOADER (download raw source → loadstring → execute)
+-- Fully open source: the library is served as plain Lua, no encryption.
 -- ══════════════════════════════════════════════════════════════════════════════
 local function FetchText(url)
     local res = httpRequest({ Url = url, Method = "GET" })
@@ -167,52 +168,12 @@ local function FetchText(url)
     return false, nil
 end
 
-local function b64decode(s)
-    local map, alphabet = {}, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-    for i = 1, #alphabet do map[alphabet:sub(i, i)] = i - 1 end
-    local out, n = {}, 0
-    for i = 1, #s, 4 do
-        local a, b = map[s:sub(i, i)], map[s:sub(i + 1, i + 1)]
-        local c, d = map[s:sub(i + 2, i + 2)], map[s:sub(i + 3, i + 3)]
-        if a and b then
-            n = n + 1; out[n] = string.char(a * 4 + math.floor(b / 16))
-            if c then
-                n = n + 1; out[n] = string.char((b % 16) * 16 + math.floor(c / 4))
-                if d then
-                    n = n + 1; out[n] = string.char((c % 4) * 64 + d)
-                end
-            end
-        end
-    end
-    return table.concat(out)
-end
-
-local function xorDecrypt(b64, key)
-    local data = b64decode(b64)
-    local out, kl = {}, #key
-    for i = 1, #data do
-        out[i] = string.char(bit32.bxor(data:byte(i), key:byte(((i - 1) % kl) + 1)))
-    end
-    return table.concat(out)
-end
-
--- key reconstructed at runtime (never stored as a readable string)
-local LIB_KEY_BYTES = {23, 32, 51, 51, 44, 120, 25, 60, 55, 120, 103, 101, 103, 99, 120, 13, 44, 15, 116}
-local function buildLibKey()
-    local k = {}
-    for i = 1, #LIB_KEY_BYTES do
-        k[i] = string.char(bit32.bxor(LIB_KEY_BYTES[i], 85))
-    end
-    return table.concat(k)
-end
-
 local function LoadLibrary()
     local libUrl = CFG.LIB_URL
-    local ok, b64 = FetchText(libUrl)
+    local ok, source = FetchText(libUrl)
     if not ok then
-        return nil, "Failed to download library blob."
+        return nil, "Failed to download library source."
     end
-    local source = xorDecrypt(b64, buildLibKey())
     local chunk, compileErr = loadstring(source)
     if not chunk then
         return nil, "Library compile error: " .. tostring(compileErr)
