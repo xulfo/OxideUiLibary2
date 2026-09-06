@@ -189,6 +189,170 @@ local ThemeColors = {
     Border = Color3.fromRGB(35, 35, 35),
 }
 
+-- Helpers for V2 panels (moved out of Oxide:Window to avoid 200 local limit)
+local function buildPerfPanelV2(ctx)
+    local OxideOnTop, RightContainer, ThemeColors, TweenService, RunService, UserInputService, trackCleanup = ctx.OxideOnTop, ctx.RightContainer, ctx.ThemeColors, ctx.TweenService, ctx.RunService, ctx.UserInputService, ctx.trackCleanup
+    local isDestroyedRef = ctx.isDestroyedRef
+    local bottomMargin, panelGap, PROFILE_TWEEN = ctx.bottomMargin, ctx.panelGap, ctx.PROFILE_TWEEN
+    local perfWidth, perfHeight = 266, 294
+    local perfOpenPos = UDim2.new(1, -18, 1, -bottomMargin)
+    local perfClosedPos = UDim2.new(1, perfWidth + 36, 1, -bottomMargin)
+    local function corner(p,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r); c.Parent=p; return c end
+    local function stroke(p,col) local s=Instance.new("UIStroke"); s.Color=col or ThemeColors.Border; s.Thickness=1; s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border; s.Parent=p; return s end
+    local perfPanel = Instance.new("CanvasGroup"); perfPanel.Name="LivePerformance"; perfPanel.AnchorPoint=Vector2.new(1,1); perfPanel.Position=perfClosedPos; perfPanel.Size=UDim2.fromOffset(perfWidth, perfHeight); perfPanel.BackgroundColor3=ThemeColors.BackgroundTop; perfPanel.GroupTransparency=1; perfPanel.ZIndex=149; perfPanel.Parent=OxideOnTop; corner(perfPanel,14); stroke(perfPanel, ThemeColors.Border); perfPanel.ClipsDescendants=true
+    local perfHeader = Instance.new("Frame", perfPanel); perfHeader.Size=UDim2.new(1,0,0,56); perfHeader.BackgroundTransparency=1; perfHeader.ZIndex=150
+    local perfTitle = Instance.new("TextLabel", perfHeader); perfTitle.Text="LIVE PERFORMANCE"; perfTitle.Font=Enum.Font.GothamBold; perfTitle.TextSize=12; perfTitle.TextColor3=Color3.fromRGB(255,255,255); perfTitle.TextXAlignment=Enum.TextXAlignment.Left; perfTitle.BackgroundTransparency=1; perfTitle.Position=UDim2.fromOffset(16,11); perfTitle.Size=UDim2.new(1,-94,0,17); perfTitle.ZIndex=151
+    local perfSub = Instance.new("TextLabel", perfHeader); perfSub.Text="Real-time frame tracker"; perfSub.Font=Enum.Font.Gotham; perfSub.TextSize=9; perfSub.TextColor3=Color3.fromRGB(139,139,139); perfSub.TextXAlignment=Enum.TextXAlignment.Left; perfSub.BackgroundTransparency=1; perfSub.Position=UDim2.fromOffset(16,31); perfSub.Size=UDim2.new(1,-94,0,13); perfSub.ZIndex=151
+    local perfCloseBtn = Instance.new("TextButton", perfHeader); perfCloseBtn.Text="x"; perfCloseBtn.Font=Enum.Font.GothamBold; perfCloseBtn.TextSize=14; perfCloseBtn.TextColor3=Color3.fromRGB(255,255,255); perfCloseBtn.AnchorPoint=Vector2.new(1,0); perfCloseBtn.Position=UDim2.new(1,-14,0,14); perfCloseBtn.Size=UDim2.fromOffset(24,24); perfCloseBtn.BackgroundColor3=Color3.fromRGB(35,35,35); perfCloseBtn.ZIndex=152; corner(perfCloseBtn,6)
+    local fpsSummary = Instance.new("Frame", perfPanel); fpsSummary.Position=UDim2.fromOffset(14,58); fpsSummary.Size=UDim2.new(1,-28,0,56); fpsSummary.BackgroundColor3=Color3.fromRGB(31,31,31); fpsSummary.ZIndex=150; corner(fpsSummary,10); stroke(fpsSummary, ThemeColors.Border)
+    local fpsLblTitle = Instance.new("TextLabel", fpsSummary); fpsLblTitle.Text="FPS"; fpsLblTitle.Font=Enum.Font.GothamBold; fpsLblTitle.TextSize=8; fpsLblTitle.TextColor3=Color3.fromRGB(139,139,139); fpsLblTitle.TextXAlignment=Enum.TextXAlignment.Left; fpsLblTitle.BackgroundTransparency=1; fpsLblTitle.Position=UDim2.fromOffset(12,8); fpsLblTitle.Size=UDim2.new(0.5,-12,0,11); fpsLblTitle.ZIndex=151
+    local currentFpsLabel = Instance.new("TextLabel", fpsSummary); currentFpsLabel.Text="--"; currentFpsLabel.Font=Enum.Font.GothamBold; currentFpsLabel.TextSize=23; currentFpsLabel.TextColor3=Color3.fromRGB(255,255,255); currentFpsLabel.TextXAlignment=Enum.TextXAlignment.Left; currentFpsLabel.BackgroundTransparency=1; currentFpsLabel.Position=UDim2.fromOffset(12,21); currentFpsLabel.Size=UDim2.new(0.5,-12,0,28); currentFpsLabel.ZIndex=151
+    local ftTitle = Instance.new("TextLabel", fpsSummary); ftTitle.Text="FRAME TIME"; ftTitle.Font=Enum.Font.GothamBold; ftTitle.TextSize=8; ftTitle.TextColor3=Color3.fromRGB(139,139,139); ftTitle.TextXAlignment=Enum.TextXAlignment.Right; ftTitle.BackgroundTransparency=1; ftTitle.Position=UDim2.new(0.5,0,0,8); ftTitle.Size=UDim2.new(0.5,-12,0,11); ftTitle.ZIndex=151
+    local frameTimeLabel = Instance.new("TextLabel", fpsSummary); frameTimeLabel.Text="-- ms"; frameTimeLabel.Font=Enum.Font.GothamMedium; frameTimeLabel.TextSize=12; frameTimeLabel.TextColor3=Color3.fromRGB(255,255,255); frameTimeLabel.TextXAlignment=Enum.TextXAlignment.Right; frameTimeLabel.BackgroundTransparency=1; frameTimeLabel.Position=UDim2.new(0.5,0,0,26); frameTimeLabel.Size=UDim2.new(0.5,-12,0,18); frameTimeLabel.ZIndex=151
+    local graphTitle = Instance.new("TextLabel", perfPanel); graphTitle.Text="FRAME HISTORY"; graphTitle.Font=Enum.Font.GothamBold; graphTitle.TextSize=9; graphTitle.TextColor3=Color3.fromRGB(139,139,139); graphTitle.TextXAlignment=Enum.TextXAlignment.Left; graphTitle.BackgroundTransparency=1; graphTitle.Position=UDim2.fromOffset(16,126); graphTitle.Size=UDim2.new(1,-32,0,13); graphTitle.ZIndex=150
+    local graphCard = Instance.new("Frame", perfPanel); graphCard.Position=UDim2.fromOffset(14,145); graphCard.Size=UDim2.new(1,-28,0,82); graphCard.BackgroundColor3=Color3.fromRGB(31,31,31); graphCard.ClipsDescendants=true; graphCard.ZIndex=150; corner(graphCard,8); stroke(graphCard, ThemeColors.Border)
+    local graphPlot = Instance.new("Frame", graphCard); graphPlot.BackgroundTransparency=1; graphPlot.Position=UDim2.fromOffset(8,8); graphPlot.Size=UDim2.new(1,-16,1,-16); graphPlot.ZIndex=151
+    local maxFpsSamples, fpsSamples = 48, {}
+    local graphLines = {}; for i=1,47 do local f=Instance.new("Frame", graphPlot); f.BackgroundColor3=Color3.fromRGB(167,200,244); f.BorderSizePixel=0; f.Visible=false; f.ZIndex=152; table.insert(graphLines,f) end
+    local function redraw()
+        local sc=#fpsSamples; if sc<2 then return end
+        local ps=graphPlot.AbsoluteSize; local uW,uH=ps.X-2, ps.Y-6; local gm=60; for _,v in ipairs(fpsSamples) do gm=math.max(gm,v) end; local den=47
+        for i=1,math.min(sc-1,#graphLines) do local f=graphLines[i]; local x1,y1=1+((i-1)/den)*uW,3+(1-math.clamp(fpsSamples[i]/gm,0,1))*uH; local x2,y2=1+(i/den)*uW,3+(1-math.clamp(fpsSamples[i+1]/gm,0,1))*uH; local dx,dy=x2-x1,y2-y1; local len=math.sqrt(dx*dx+dy*dy); if len>0.5 then f.Position=UDim2.fromOffset(x1,y1); f.Size=UDim2.fromOffset(len,2); f.Rotation=math.deg(math.atan2(dy,dx)); f.Visible=true else f.Visible=false end end
+    end
+    local statsStrip = Instance.new("Frame", perfPanel); statsStrip.Position=UDim2.fromOffset(14,237); statsStrip.Size=UDim2.new(1,-28,0,43); statsStrip.BackgroundColor3=Color3.fromRGB(31,31,31); statsStrip.ZIndex=150; corner(statsStrip,8); stroke(statsStrip, ThemeColors.Border)
+    local avgLabel=Instance.new("TextLabel", statsStrip); avgLabel.Text="Avg --"; avgLabel.Font=Enum.Font.GothamMedium; avgLabel.TextSize=10; avgLabel.TextColor3=Color3.fromRGB(200,200,200); avgLabel.BackgroundTransparency=1; avgLabel.Position=UDim2.fromOffset(10,8); avgLabel.Size=UDim2.new(0.33,-10,0,14); avgLabel.ZIndex=151
+    local minLabel=Instance.new("TextLabel", statsStrip); minLabel.Text="Min --"; minLabel.Font=Enum.Font.GothamMedium; minLabel.TextSize=10; minLabel.TextColor3=Color3.fromRGB(200,200,200); minLabel.BackgroundTransparency=1; minLabel.Position=UDim2.new(0.33,0,0,8); minLabel.Size=UDim2.new(0.33,-10,0,14); minLabel.ZIndex=151; minLabel.TextXAlignment=Enum.TextXAlignment.Center
+    local maxLabel=Instance.new("TextLabel", statsStrip); maxLabel.Text="Max --"; maxLabel.Font=Enum.Font.GothamMedium; maxLabel.TextSize=10; maxLabel.TextColor3=Color3.fromRGB(200,200,200); maxLabel.BackgroundTransparency=1; maxLabel.AnchorPoint=Vector2.new(1,0); maxLabel.Position=UDim2.new(1,-10,0,8); maxLabel.Size=UDim2.new(0.33,-10,0,14); maxLabel.TextXAlignment=Enum.TextXAlignment.Right; maxLabel.ZIndex=151
+    local perfOpen=false
+    local function setPerfVisible(open, instant)
+        perfOpen=open==true
+        local pos=open and perfOpenPos or perfClosedPos
+        local tr=open and 0 or 1
+        if instant then perfPanel.Position=pos; perfPanel.GroupTransparency=tr else TweenService:Create(perfPanel, PROFILE_TWEEN, {Position=pos, GroupTransparency=tr}):Play() end
+        if ctx.perfToggleBtn then ctx.perfToggleBtn.BackgroundColor3=open and Color3.fromRGB(36,36,36) or Color3.fromRGB(42,42,42) end
+    end
+    perfCloseBtn.MouseButton1Click:Connect(function() setPerfVisible(false) end)
+    pcall(function()
+        local btn=Instance.new("TextButton", RightContainer); btn.Name="PerfToggle"; btn.Text="K"; btn.Font=Enum.Font.GothamBold; btn.TextSize=10; btn.TextColor3=Color3.fromRGB(154,154,154); btn.Size=UDim2.fromOffset(28,20); btn.BackgroundColor3=Color3.fromRGB(42,42,42); btn.AutoButtonColor=false; btn.ZIndex=152; Instance.new("UICorner", btn).CornerRadius=UDim.new(0,6); local s=Instance.new("UIStroke", btn); s.Color=Color3.fromRGB(35,35,35); s.Thickness=1; btn.LayoutOrder=4; btn.MouseEnter:Connect(function() if not perfOpen then TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3=Color3.fromRGB(38,38,38)}):Play() end end); btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3=perfOpen and Color3.fromRGB(36,36,36) or Color3.fromRGB(42,42,42)}):Play() end); btn.MouseButton1Click:Connect(function() setPerfVisible(not perfOpen) end); ctx.perfToggleBtn=btn
+    end)
+    trackCleanup(UserInputService.InputBegan:Connect(function(input,gp)
+        if gp then return end
+        if input.KeyCode==Enum.KeyCode.K and not isDestroyedRef() then setPerfVisible(not perfOpen) end
+    end))
+    do
+        local ffc, fe=0,0
+        local conn=RunService.RenderStepped:Connect(function(dt)
+            if isDestroyedRef() or not perfPanel.Parent then return end
+            ffc+=1; fe+=dt
+            if fe>=0.25 then
+                local fps=ffc/fe; ffc,fe=0,0
+                table.insert(fpsSamples, fps); if #fpsSamples>maxFpsSamples then table.remove(fpsSamples,1) end
+                local tot,lo,hi=0,math.huge,-math.huge; for _,v in ipairs(fpsSamples) do tot+=v; lo=math.min(lo,v); hi=math.max(hi,v) end
+                local avg=#fpsSamples>0 and tot/#fpsSamples or 0
+                currentFpsLabel.Text=tostring(math.floor(fps+0.5)); frameTimeLabel.Text=string.format("%.1f ms", fps>0 and 1000/fps or 0)
+                avgLabel.Text="Avg "..tostring(math.floor(avg+0.5)); minLabel.Text="Min "..tostring(math.floor((lo==math.huge and 0 or lo)+0.5)); maxLabel.Text="Max "..tostring(math.floor((hi==-math.huge and 0 or hi)+0.5))
+                redraw()
+                if ctx.perfToggleBtn then ctx.perfToggleBtn.TextColor3=fps>=50 and Color3.fromRGB(75,215,125) or fps>=30 and Color3.fromRGB(240,190,50) or Color3.fromRGB(235,75,75) end
+            end
+        end)
+        trackCleanup(conn)
+    end
+    trackCleanup(perfPanel)
+    ctx.perfPanel=perfPanel; ctx.setPerfVisible=setPerfVisible
+    return perfPanel
+end
+local function buildMusicPanelV2(ctx)
+    local OxideOnTop, RightContainer, ThemeColors, TweenService, RunService, UserInputService, trackCleanup = ctx.OxideOnTop, ctx.RightContainer, ctx.ThemeColors, ctx.TweenService, ctx.RunService, ctx.UserInputService, ctx.trackCleanup
+    local isDestroyedRef = ctx.isDestroyedRef
+    local bottomMargin, panelGap, PROFILE_TWEEN = ctx.bottomMargin, ctx.panelGap, ctx.PROFILE_TWEEN
+    local perfHeight = 294
+    local MUSIC_FOLDER="OxideMusic"
+    local musicWidth, musicHeight=312,416
+    local musicOpenPos=UDim2.new(1,-18,1,-(bottomMargin+perfHeight+panelGap))
+    local musicClosedPos=UDim2.new(1,musicWidth+36,1,-(bottomMargin+perfHeight+panelGap))
+    local function corner(p,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r); c.Parent=p; return c end
+    local function stroke(p,col) local s=Instance.new("UIStroke"); s.Color=col or ThemeColors.Border; s.Thickness=1; s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border; s.Parent=p; return s end
+    local musicPanel=Instance.new("CanvasGroup"); musicPanel.Name="MusicPlayer"; musicPanel.AnchorPoint=Vector2.new(1,1); musicPanel.Position=musicClosedPos; musicPanel.Size=UDim2.fromOffset(musicWidth,musicHeight); musicPanel.BackgroundColor3=ThemeColors.BackgroundTop; musicPanel.GroupTransparency=1; musicPanel.ZIndex=150; musicPanel.Parent=OxideOnTop; corner(musicPanel,14); stroke(musicPanel, ThemeColors.Border); musicPanel.ClipsDescendants=true
+    local musicHeader=Instance.new("Frame", musicPanel); musicHeader.Size=UDim2.new(1,0,0,56); musicHeader.BackgroundTransparency=1
+    local mTitle=Instance.new("TextLabel", musicHeader); mTitle.Text="MUSIC PLAYER"; mTitle.Font=Enum.Font.GothamBold; mTitle.TextSize=13; mTitle.TextColor3=Color3.fromRGB(255,255,255); mTitle.TextXAlignment=Enum.TextXAlignment.Left; mTitle.BackgroundTransparency=1; mTitle.Position=UDim2.fromOffset(16,12); mTitle.Size=UDim2.new(1,-80,0,18); mTitle.ZIndex=152
+    local mSub=Instance.new("TextLabel", musicHeader); mSub.Text=MUSIC_FOLDER; mSub.Font=Enum.Font.Gotham; mSub.TextSize=10; mSub.TextColor3=Color3.fromRGB(139,139,139); mSub.TextXAlignment=Enum.TextXAlignment.Left; mSub.BackgroundTransparency=1; mSub.Position=UDim2.fromOffset(16,30); mSub.Size=UDim2.new(1,-80,0,14); mSub.ZIndex=152
+    do local d=Instance.new("Frame", musicPanel); d.Position=UDim2.new(0,16,0,48); d.Size=UDim2.new(1,-32,0,1); d.BackgroundColor3=ThemeColors.Border; d.BorderSizePixel=0; d.ZIndex=151 end
+    local musicCloseBtn2=Instance.new("TextButton", musicHeader); musicCloseBtn2.Text="x"; musicCloseBtn2.Font=Enum.Font.GothamBold; musicCloseBtn2.TextSize=14; musicCloseBtn2.TextColor3=Color3.fromRGB(255,255,255); musicCloseBtn2.AnchorPoint=Vector2.new(1,0); musicCloseBtn2.Position=UDim2.new(1,-14,0,14); musicCloseBtn2.Size=UDim2.fromOffset(24,24); musicCloseBtn2.BackgroundColor3=Color3.fromRGB(35,35,35); musicCloseBtn2.ZIndex=152; corner(musicCloseBtn2,6)
+    local SoundService=game:GetService("SoundService")
+    local musicSound=Instance.new("Sound"); musicSound.Name="OxideMusicPlayer"; musicSound.Volume=0.5; musicSound.Looped=false; pcall(function() musicSound.Parent=SoundService end)
+    local tracks, currentIndex, isPlaying={},0,false
+    local npTitle=Instance.new("TextLabel", musicPanel); npTitle.Text="Nothing playing"; npTitle.Font=Enum.Font.GothamBold; npTitle.TextSize=14; npTitle.TextColor3=Color3.fromRGB(255,255,255); npTitle.TextXAlignment=Enum.TextXAlignment.Left; npTitle.TextTruncate=Enum.TextTruncate.AtEnd; npTitle.BackgroundTransparency=1; npTitle.Position=UDim2.fromOffset(16,58); npTitle.Size=UDim2.new(1,-32,0,18); npTitle.ZIndex=152
+    local npSub2=Instance.new("TextLabel", musicPanel); npSub2.Text="Add audio to the "..MUSIC_FOLDER.." folder"; npSub2.Font=Enum.Font.GothamMedium; npSub2.TextSize=11; npSub2.TextColor3=Color3.fromRGB(154,154,154); npSub2.TextXAlignment=Enum.TextXAlignment.Left; npSub2.TextTruncate=Enum.TextTruncate.AtEnd; npSub2.BackgroundTransparency=1; npSub2.Position=UDim2.fromOffset(16,78); npSub2.Size=UDim2.new(1,-32,0,15); npSub2.ZIndex=152
+    local progBg=Instance.new("Frame", musicPanel); progBg.Position=UDim2.fromOffset(16,104); progBg.Size=UDim2.new(1,-32,0,5); progBg.BackgroundColor3=Color3.fromRGB(43,43,43); progBg.ZIndex=152; corner(progBg,2)
+    local progFill=Instance.new("Frame", progBg); progFill.BackgroundColor3=ThemeColors.Accent; progFill.Size=UDim2.new(0,0,1,0); progFill.ZIndex=153; corner(progFill,2)
+    local curTime=Instance.new("TextLabel", musicPanel); curTime.Text="0:00"; curTime.Font=Enum.Font.GothamMedium; curTime.TextSize=10; curTime.TextColor3=Color3.fromRGB(139,139,139); curTime.BackgroundTransparency=1; curTime.Position=UDim2.fromOffset(16,114); curTime.Size=UDim2.fromOffset(60,12); curTime.ZIndex=152
+    local totTime=Instance.new("TextLabel", musicPanel); totTime.Text="0:00"; totTime.Font=Enum.Font.GothamMedium; totTime.TextSize=10; totTime.TextColor3=Color3.fromRGB(139,139,139); totTime.TextXAlignment=Enum.TextXAlignment.Right; totTime.AnchorPoint=Vector2.new(1,0); totTime.Position=UDim2.new(1,-16,0,114); totTime.Size=UDim2.fromOffset(60,12); totTime.BackgroundTransparency=1; totTime.ZIndex=152
+    local function fmtTime(s) s=math.max(0,math.floor(s+0.5)); return string.format("%d:%02d", math.floor(s/60), s%60) end
+    local ctl=Instance.new("Frame", musicPanel); ctl.Position=UDim2.fromOffset(0,132); ctl.Size=UDim2.new(1,0,0,48); ctl.BackgroundTransparency=1; ctl.ZIndex=152
+    local prevBtn=Instance.new("TextButton", ctl); prevBtn.Text="?"; prevBtn.Font=Enum.Font.GothamBold; prevBtn.TextSize=14; prevBtn.TextColor3=Color3.fromRGB(255,255,255); prevBtn.Position=UDim2.fromOffset(16,6); prevBtn.Size=UDim2.fromOffset(36,36); prevBtn.BackgroundColor3=Color3.fromRGB(31,31,31); corner(prevBtn,8)
+    local playBtn=Instance.new("TextButton", ctl); playBtn.Text="?"; playBtn.Font=Enum.Font.GothamBold; playBtn.TextSize=16; playBtn.TextColor3=Color3.fromRGB(10,16,26); playBtn.AnchorPoint=Vector2.new(0.5,0); playBtn.Position=UDim2.new(0.5,0,0,6); playBtn.Size=UDim2.fromOffset(48,36); playBtn.BackgroundColor3=ThemeColors.Accent; corner(playBtn,8)
+    local nextBtn=Instance.new("TextButton", ctl); nextBtn.Text="??"; nextBtn.Font=Enum.Font.GothamBold; nextBtn.TextSize=12; nextBtn.TextColor3=Color3.fromRGB(255,255,255); nextBtn.AnchorPoint=Vector2.new(1,0); nextBtn.Position=UDim2.new(1,-16,0,6); nextBtn.Size=UDim2.fromOffset(36,36); nextBtn.BackgroundColor3=Color3.fromRGB(31,31,31); corner(nextBtn,8)
+    local volRow=Instance.new("Frame", musicPanel); volRow.Position=UDim2.fromOffset(16,190); volRow.Size=UDim2.new(1,-32,0,16); volRow.BackgroundTransparency=1; volRow.ZIndex=152
+    local volLbl=Instance.new("TextLabel", volRow); volLbl.Text="VOLUME"; volLbl.Font=Enum.Font.GothamBold; volLbl.TextSize=9; volLbl.TextColor3=Color3.fromRGB(139,139,139); volLbl.BackgroundTransparency=1; volLbl.Size=UDim2.fromOffset(50,16)
+    local volBg=Instance.new("Frame", volRow); volBg.Position=UDim2.new(0,56,0.5,-3); volBg.Size=UDim2.new(1,-56,0,6); volBg.BackgroundColor3=Color3.fromRGB(43,43,43); corner(volBg,3)
+    local volFill=Instance.new("Frame", volBg); volFill.BackgroundColor3=ThemeColors.Accent; volFill.Size=UDim2.new(0.5,0,1,0); corner(volFill,3)
+    local volHit=Instance.new("TextButton", volBg); volHit.Text=""; volHit.BackgroundTransparency=1; volHit.Size=UDim2.fromScale(1,1)
+    local plLabel=Instance.new("TextLabel", musicPanel); plLabel.Text="PLAYLIST"; plLabel.Font=Enum.Font.GothamBold; plLabel.TextSize=10; plLabel.TextColor3=Color3.fromRGB(139,139,139); plLabel.BackgroundTransparency=1; plLabel.Position=UDim2.fromOffset(18,216); plLabel.Size=UDim2.fromOffset(120,14); plLabel.ZIndex=152
+    local refreshBtn=Instance.new("TextButton", musicPanel); refreshBtn.Text="?"; refreshBtn.Font=Enum.Font.GothamBold; refreshBtn.TextSize=14; refreshBtn.AnchorPoint=Vector2.new(1,0.5); refreshBtn.Position=UDim2.new(1,-16,0,223); refreshBtn.Size=UDim2.fromOffset(22,22); refreshBtn.BackgroundColor3=Color3.fromRGB(31,31,31); corner(refreshBtn,6)
+    local list=Instance.new("ScrollingFrame", musicPanel); list.Position=UDim2.fromOffset(16,238); list.Size=UDim2.new(1,-32,1,-254); list.BackgroundColor3=Color3.fromRGB(20,20,20); list.ScrollBarThickness=3; list.ScrollBarImageColor3=ThemeColors.Border; list.CanvasSize=UDim2.new(); list.AutomaticCanvasSize=Enum.AutomaticSize.Y; list.ZIndex=152; Instance.new("UIListLayout", list).Padding=UDim.new(0,4)
+    local emptyLbl=Instance.new("TextLabel", list); emptyLbl.Text="No tracks - drop audio files in the\n"..MUSIC_FOLDER.." folder, then hit refresh"; emptyLbl.Font=Enum.Font.GothamMedium; emptyLbl.TextSize=11; emptyLbl.TextColor3=Color3.fromRGB(139,139,139); emptyLbl.BackgroundTransparency=1; emptyLbl.AnchorPoint=Vector2.new(0.5,0.5); emptyLbl.Position=UDim2.fromScale(0.5,0.5); emptyLbl.Size=UDim2.new(1,-20,0,40); emptyLbl.TextWrapped=true; emptyLbl.ZIndex=153
+    local musicOpen=false
+    local function setMusicVisible(v,instant)
+        musicOpen=v==true
+        local tp=musicOpen and musicOpenPos or musicClosedPos
+        local tr=musicOpen and 0 or 1
+        if instant then musicPanel.Position=tp; musicPanel.GroupTransparency=tr else TweenService:Create(musicPanel, PROFILE_TWEEN, {Position=tp, GroupTransparency=tr}):Play() end
+        if ctx.musicToggleBtn then ctx.musicToggleBtn.BackgroundColor3=musicOpen and Color3.fromRGB(36,36,36) or Color3.fromRGB(42,42,42) end
+    end
+    musicCloseBtn2.MouseButton1Click:Connect(function() setMusicVisible(false) end)
+    pcall(function()
+        local btn=Instance.new("TextButton", RightContainer); btn.Name="MusicToggle"; btn.Text="?"; btn.Font=Enum.Font.GothamBold; btn.TextSize=12; btn.TextColor3=Color3.fromRGB(154,154,154); btn.Size=UDim2.fromOffset(28,20); btn.BackgroundColor3=Color3.fromRGB(42,42,42); btn.AutoButtonColor=false; Instance.new("UICorner", btn).CornerRadius=UDim.new(0,6); local s=Instance.new("UIStroke", btn); s.Color=Color3.fromRGB(35,35,35); s.Thickness=1; btn.LayoutOrder=5; btn.MouseEnter:Connect(function() if not musicOpen then TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3=Color3.fromRGB(38,38,38)}):Play() end end); btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3=musicOpen and Color3.fromRGB(36,36,36) or Color3.fromRGB(42,42,42)}):Play() end); btn.MouseButton1Click:Connect(function() if musicOpen then setMusicVisible(false) else setMusicVisible(true) end end); ctx.musicToggleBtn=btn
+    end)
+    local function rescan()
+        for _,c in ipairs(list:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+        emptyLbl.Visible=true
+        local ok,files=pcall(function() return listfiles and listfiles(MUSIC_FOLDER) or {} end)
+        if not ok or type(files)~="table" then return end
+        local count=0
+        for _,fp in ipairs(files) do
+            local name=tostring(fp):match("([^/\\]+)$") or fp
+            if name:lower():match("%.mp3$") or name:lower():match("%.ogg$") or name:lower():match("%.wav$") then
+                count+=1
+                local b=Instance.new("TextButton", list); b.Text=name; b.Font=Enum.Font.Gotham; b.TextSize=11; b.TextColor3=Color3.fromRGB(200,200,200); b.TextXAlignment=Enum.TextXAlignment.Left; b.TextTruncate=Enum.TextTruncate.AtEnd; b.Size=UDim2.new(1,0,0,24); b.BackgroundColor3=Color3.fromRGB(31,31,31); Instance.new("UICorner", b).CornerRadius=UDim.new(0,4); b.LayoutOrder=count
+                b.MouseButton1Click:Connect(function()
+                    pcall(function()
+                        local asset=getcustomasset and getcustomasset(fp) or fp
+                        musicSound.SoundId=asset; musicSound:Play(); isPlaying=true; playBtn.Text="??"; npTitle.Text=name; npSub2.Text="Playing"; currentIndex=count
+                    end)
+                end)
+            end
+        end
+        emptyLbl.Visible=count==0
+    end
+    refreshBtn.MouseButton1Click:Connect(rescan); rescan()
+    playBtn.MouseButton1Click:Connect(function() if isPlaying then musicSound:Pause(); isPlaying=false; playBtn.Text="?" else musicSound:Resume(); isPlaying=true; playBtn.Text="??" end end)
+    prevBtn.MouseButton1Click:Connect(function() if currentIndex>1 then currentIndex-=1 end end)
+    nextBtn.MouseButton1Click:Connect(function() currentIndex+=1 end)
+    local function setVol(f) f=math.clamp(f,0,1); musicSound.Volume=f; volFill.Size=UDim2.new(f,0,1,0) end
+    volHit.MouseButton1Down:Connect(function() setVol((UserInputService:GetMouseLocation().X - volBg.AbsolutePosition.X)/volBg.AbsoluteSize.X) end)
+    trackCleanup(UserInputService.InputChanged:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseMovement and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and volBg.Parent then local p=volBg.AbsolutePosition; local s=volBg.AbsoluteSize; local mx=UserInputService:GetMouseLocation().X; if mx>=p.X and mx<=p.X+s.X then setVol((mx - p.X)/s.X) end end end))
+    setVol(0.5)
+    trackCleanup(musicSound.Ended:Connect(function() end))
+    trackCleanup(RunService.RenderStepped:Connect(function()
+        if isDestroyedRef() or not musicPanel.Parent or not musicPanel.Visible and musicPanel.GroupTransparency==1 then return end
+        local cur, max=musicSound.TimePosition, musicSound.TimeLength
+        if max>0 then progFill.Size=UDim2.new(math.clamp(cur/max,0,1),0,1,0); curTime.Text=fmtTime(cur); totTime.Text=fmtTime(max) end
+    end))
+    progBg.InputBegan:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then local pct=math.clamp((i.Position.X - progBg.AbsolutePosition.X)/math.max(1,progBg.AbsoluteSize.X),0,1); pcall(function() musicSound.TimePosition=pct*(musicSound.TimeLength>0 and musicSound.TimeLength or 0) end) end end)
+    trackCleanup(musicPanel)
+    ctx.musicPanel=musicPanel
+    return musicPanel
+end
 local function resolveImage(source)
     if source == nil then return "" end
 
@@ -399,584 +563,9 @@ function CircleClick(Button, X, Y)
     end)
 end
 
--- ════════════════════════════════════════════════════════════════
--- TAG SYSTEM + LIVE TRACKING (ported from the Oxide reference UI)
--- Koyeb presence server + one-shot launch tracker.
--- ════════════════════════════════════════════════════════════════
-local TagPlayers     = game:GetService("Players")
-local TagWorkspace   = game:GetService("Workspace")
-local TagRunService  = game:GetService("RunService")
-
-local TAG_BASE_URL          = "https://adorable-sallyanne-fgdfgdfgd-b2d051be.koyeb.app"
-local TAG_REGISTER          = TAG_BASE_URL .. "/register"
-local TAG_USERS             = TAG_BASE_URL .. "/users"
-local TAG_ADMIN_DISCONNECT  = TAG_BASE_URL .. "/admin/disconnect"
-local TAG_CHAT_SEND         = TAG_BASE_URL .. "/chat/send"
-local TAG_CHAT_MESSAGES     = TAG_BASE_URL .. "/chat/messages"
-
--- One-shot execution tracker (uses the same httpRequest pipeline as the tag
--- system, so it reaches the worker even on executors that block request/HttpGet).
-local TRACK_LAUNCH_URL = "https://premium-keys.oxide-premium.workers.dev/track"
-local _launchTracked   = false
-
--- Pretty game names mirrored from the worker's GAMES list.
-local GAME_TRACK_NAMES = {
-    [83038462357724]  = "Graben und reinigen",
-    [94640181989498]  = "Grow a Chicken Fighter",
-    [107778070777162] = "Steal an Egg",
-    [100068273119174] = "Leaf Simulator",
-    [128736949265057] = "Gakuran",
-}
-
-local TAG_W             = 200   -- fixed pixel width of tag
-local TAG_H             = 52    -- fixed pixel height of tag
-local TAG_WORLD_HEIGHT  = 3.4   -- world-space studs above HumanoidRootPart
-local TAG_FULL_DIST     = 40    -- studs: tag fully visible up to here
-local TAG_MAX_DISTANCE  = 110   -- studs: tag fully hidden beyond here
-
--- Detect HTTP request function
-local httpRequest = (syn and syn.request)
-    or (http and http.request)
-    or (http_request)
-    or (request)
-
-local TagSystem = {}
-TagSystem._tags        = {}   -- [Player] = { frame, glowGradient, conn, charConn }
-TagSystem._screenGui   = nil
-TagSystem._active      = {}   -- [UserId] = true
-TagSystem._userInfo    = {}   -- [UserId] = { userId, displayName, name, jobId, placeId }
-TagSystem._listeners   = {}   -- [n] = function(userInfo, activeSet)
-TagSystem._running     = false
-TagSystem._connections = {}
-
--- Register a callback that receives the latest active-user snapshot whenever
--- the tag system polls the presence server. Returns the same fn for removal.
-function TagSystem:OnUsersUpdated(fn)
-    if type(fn) == "function" then table.insert(TagSystem._listeners, fn) end
-    return fn
-end
-function TagSystem:RemoveListener(fn)
-    for i, f in ipairs(TagSystem._listeners) do
-        if f == fn then table.remove(TagSystem._listeners, i); return true end
-    end
-    return false
-end
-
--- Small construction helpers for the tag frames
-local function tagMake(className, props)
-    local inst = Instance.new(className)
-    for k, v in pairs(props) do
-        if k ~= "Parent" then inst[k] = v end
-    end
-    return inst
-end
-local function tagCorner(inst, radius)
-    tagMake("UICorner", { CornerRadius = UDim.new(0, radius), Parent = inst })
-end
-local function tagStroke(inst, color, thickness)
-    tagMake("UIStroke", {
-        Color = color, Thickness = thickness or 1,
-        ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = inst,
-    })
-end
-
--- Build the tag ScreenGui (once)
-local function ensureTagGui()
-    if TagSystem._screenGui and TagSystem._screenGui.Parent then return end
-    local localPlayer = TagPlayers.LocalPlayer
-    local targetParent
-    pcall(function() targetParent = (gethui and gethui()) or game:GetService("CoreGui") end)
-    if not targetParent then targetParent = localPlayer:WaitForChild("PlayerGui") end
-
-    local sg = Instance.new("ScreenGui")
-    sg.Name               = "OxideTagGui"
-    sg.ResetOnSpawn       = false
-    sg.IgnoreGuiInset     = true
-    sg.ZIndexBehavior     = Enum.ZIndexBehavior.Sibling
-    sg.DisplayOrder       = 8
-    pcall(function() sg.Parent = targetParent end)
-    if not sg.Parent then
-        targetParent = localPlayer:WaitForChild("PlayerGui")
-        sg.Parent = targetParent
-    end
-    TagSystem._screenGui = sg
-end
-
--- Create one tag frame for a player (positioned by RenderStepped)
-local function buildTagFrame(player)
-    ensureTagGui()
-    local sg = TagSystem._screenGui
-
-    local ACC       = ThemeColors.Accent
-    local WHITE     = Color3.fromRGB(255, 255, 255)
-    local TEXT_DIM  = Color3.fromRGB(139, 139, 139)
-    local ELEMENT   = Color3.fromRGB(31, 31, 31)
-    local ONLINE    = Color3.fromRGB(70, 200, 120)
-
-    local root = tagMake("Frame", {
-        Name = "OxideTag_" .. player.UserId,
-        Size = UDim2.fromOffset(TAG_W, TAG_H),
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        BackgroundColor3 = Color3.fromRGB(22, 22, 26),
-        BackgroundTransparency = 0.06,
-        BorderSizePixel = 0,
-        Visible = false,
-        ZIndex = 10,
-        Parent = sg,
-    })
-    tagCorner(root, 10)
-
-    -- Soft drop shadow under the tag for depth
-    tagMake("ImageLabel", {
-        Name = "Shadow", Image = "rbxassetid://1316045217",
-        ImageColor3 = Color3.fromRGB(0, 0, 0), ImageTransparency = 0.55,
-        ScaleType = Enum.ScaleType.Slice, SliceCenter = Rect.new(10, 10, 118, 118),
-        BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, 14, 1, 14),
-        ZIndex = 0, Parent = root,
-    })
-
-    -- Transparent overlay used for opacity fade
-    local fadeOverlay = tagMake("Frame", {
-        Name = "FadeOverlay", Size = UDim2.fromScale(1, 1),
-        BackgroundColor3 = Color3.fromRGB(20, 20, 24),
-        BackgroundTransparency = 1, BorderSizePixel = 0,
-        ZIndex = 99, Parent = root,
-    })
-    tagCorner(fadeOverlay, 10)
-
-    -- Traveling glow stroke
-    local glowStroke = tagMake("UIStroke", {
-        Thickness = 1.1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-        Color = ACC, Transparency = 0.2, Parent = root,
-    })
-    local glowGrad = tagMake("UIGradient", {
-        Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0.00, ACC),
-            ColorSequenceKeypoint.new(0.40, ACC),
-            ColorSequenceKeypoint.new(0.50, WHITE),
-            ColorSequenceKeypoint.new(0.60, ACC),
-            ColorSequenceKeypoint.new(1.00, ACC),
-        }),
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0.00, 1.0),
-            NumberSequenceKeypoint.new(0.34, 1.0),
-            NumberSequenceKeypoint.new(0.50, 0.0),
-            NumberSequenceKeypoint.new(0.66, 1.0),
-            NumberSequenceKeypoint.new(1.00, 1.0),
-        }),
-        Parent = glowStroke,
-    })
-
-    -- Left: avatar circle
-    local avatarHolder = tagMake("Frame", {
-        Size = UDim2.fromOffset(34, 34), Position = UDim2.fromOffset(9, 9),
-        BackgroundColor3 = Color3.fromRGB(40, 40, 45), BorderSizePixel = 0,
-        ZIndex = 2, Parent = root,
-    })
-    tagCorner(avatarHolder, 99)
-    tagStroke(avatarHolder, ACC, 1).Transparency = 0.4
-
-    local avatar = tagMake("ImageLabel", {
-        Name = "TagAvatar", Image = "", BackgroundTransparency = 1,
-        Size = UDim2.fromOffset(28, 28), Position = UDim2.fromOffset(3, 3),
-        ScaleType = Enum.ScaleType.Crop, ImageColor3 = WHITE,
-        ZIndex = 3, Parent = avatarHolder,
-    })
-    tagCorner(avatar, 99)
-
-    -- Online status dot (bottom-right of avatar)
-    local onlineRing = tagMake("Frame", {
-        AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -1, 1, -1),
-        Size = UDim2.fromOffset(11, 11), BackgroundColor3 = Color3.fromRGB(22, 22, 26),
-        BorderSizePixel = 0, ZIndex = 4, Parent = avatarHolder,
-    })
-    tagCorner(onlineRing, 99)
-    local onlineDot = tagMake("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-        Size = UDim2.fromOffset(6, 6), BackgroundColor3 = ONLINE,
-        BorderSizePixel = 0, ZIndex = 5, Parent = onlineRing,
-    })
-    tagCorner(onlineDot, 99)
-
-    -- Vertical divider between avatar and text
-    tagMake("Frame", {
-        Size = UDim2.fromOffset(1, 30), Position = UDim2.fromOffset(51, 11),
-        BackgroundColor3 = Color3.fromRGB(45, 45, 50), BorderSizePixel = 0,
-        ZIndex = 2, Parent = root,
-    })
-
-    -- Right side: text content
-    local textX     = 60
-    local badgeW    = 46
-    local badgePadR = 9
-    local textWidth = TAG_W - textX - badgeW - badgePadR - 6
-
-    local nameLabel = tagMake("TextLabel", {
-        Text = player.DisplayName, Font = Enum.Font.GothamBold, TextSize = 13,
-        TextColor3 = Color3.fromRGB(245, 245, 248), BackgroundTransparency = 1,
-        Size = UDim2.fromOffset(textWidth, 16), Position = UDim2.fromOffset(textX, 9),
-        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-        ZIndex = 2, Parent = root,
-    })
-
-    local userLabel = tagMake("TextLabel", {
-        Text = "@" .. player.Name, Font = Enum.Font.Gotham, TextSize = 11,
-        TextColor3 = Color3.fromRGB(140, 140, 148), BackgroundTransparency = 1,
-        Size = UDim2.fromOffset(textWidth, 13), Position = UDim2.fromOffset(textX, 26),
-        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-        ZIndex = 2, Parent = root,
-    })
-
-    -- "Oxide" badge (bottom right)
-    local badge = tagMake("Frame", {
-        Size = UDim2.fromOffset(badgeW, 16), AnchorPoint = Vector2.new(1, 1),
-        Position = UDim2.new(1, -badgePadR, 1, -9),
-        BackgroundColor3 = ACC, BackgroundTransparency = 0.82,
-        BorderSizePixel = 0, ZIndex = 2, Parent = root,
-    })
-    tagCorner(badge, 99)
-    tagStroke(badge, ACC, 0.6).Transparency = 0.4
-    tagMake("TextLabel", {
-        Text = "Oxide", Font = Enum.Font.GothamBold, TextSize = 8,
-        TextColor3 = Color3.fromRGB(222, 236, 253), BackgroundTransparency = 1,
-        Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center,
-        TextYAlignment = Enum.TextYAlignment.Center, ZIndex = 3, Parent = badge,
-    })
-
-    -- Fetch avatar thumbnail async
-    task.spawn(function()
-        local ok, img = pcall(function()
-            return TagPlayers:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
-        end)
-        if ok and avatar and avatar.Parent then
-            avatar.Image = img
-        end
-    end)
-
-    return root, glowGrad, fadeOverlay
-end
-
--- Outline color matches the moving UI glow color
-local TAG_OUTLINE_COLOR = ThemeColors.Accent
-
--- Attach an outline (Highlight, outline-only) to a player's character.
--- Only applied to OTHER players, never the local player.
-local function applyOutline(player)
-    if player == TagPlayers.LocalPlayer then return nil end
-    local char = player.Character
-    if not char then return nil end
-
-    local existing = char:FindFirstChild("OxideOutline")
-    if existing then existing:Destroy() end
-
-    local hl = Instance.new("Highlight")
-    hl.Name             = "OxideOutline"
-    hl.FillColor        = Color3.fromRGB(0, 0, 0)
-    hl.FillTransparency = 1
-    hl.OutlineColor     = TAG_OUTLINE_COLOR
-    hl.OutlineTransparency = 0
-    hl.Adornee          = char
-    hl.DepthMode        = Enum.HighlightDepthMode.AlwaysOnTop
-    hl.Parent           = char
-    return hl
-end
-
-local function clearOutline(player)
-    local char = player.Character
-    if not char then return end
-    local existing = char:FindFirstChild("OxideOutline")
-    if existing then existing:Destroy() end
-end
-
-local function removeTag(player)
-    local data = TagSystem._tags[player]
-    if data then
-        if data.conn then data.conn:Disconnect() end
-        if data.charConn then data.charConn:Disconnect() end
-        if data.frame and data.frame.Parent then data.frame:Destroy() end
-        clearOutline(player)
-        TagSystem._tags[player] = nil
-    end
-end
-
-local function addTag(player)
-    if player == TagPlayers.LocalPlayer then return end
-    if TagSystem._tags[player] then return end
-
-    local frame, glowGrad, fadeOverlay = buildTagFrame(player)
-    local glowT = 0
-    local currentFade = 0  -- 0 = visible, 1 = hidden
-
-    local function refreshOutline()
-        local char = player.Character
-        if not char then return end
-        local existing = char:FindFirstChild("OxideOutline")
-        if not existing then applyOutline(player) end
-    end
-    refreshOutline()
-
-    local charConn
-    charConn = player.CharacterAdded:Connect(function()
-        task.wait(0.2)
-        applyOutline(player)
-    end)
-
-    local conn = TagRunService.RenderStepped:Connect(function(dt)
-        if not frame or not frame.Parent then return end
-
-        local char = player.Character
-        local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso"))
-        if not hrp or not hrp:IsA("BasePart") then
-            frame.Visible = false
-            return
-        end
-
-        local outline = char:FindFirstChild("OxideOutline")
-        if not outline then outline = applyOutline(player) end
-
-        local camera = TagWorkspace.CurrentCamera
-        if not camera then frame.Visible = false; return end
-
-        local anchorWorld = hrp.Position + Vector3.new(0, TAG_WORLD_HEIGHT, 0)
-        local distance = (anchorWorld - camera.CFrame.Position).Magnitude
-        local screenPos, onScreen = camera:WorldToScreenPoint(anchorWorld)
-
-        if not onScreen or screenPos.Z <= 0 then
-            frame.Visible = false
-            if outline then outline.Enabled = false end
-            return
-        end
-
-        local targetFade = 0
-        if distance > TAG_FULL_DIST then
-            targetFade = math.clamp((distance - TAG_FULL_DIST) / (TAG_MAX_DISTANCE - TAG_FULL_DIST), 0, 1)
-        end
-        currentFade = currentFade + (targetFade - currentFade) * math.clamp(dt * 6, 0, 1)
-        if currentFade > 0.98 then
-            frame.Visible = false
-            if outline then outline.Enabled = false end
-            return
-        end
-
-        frame.Visible = true
-        frame.Size = UDim2.fromOffset(TAG_W, TAG_H)
-        if fadeOverlay and fadeOverlay.Parent then
-            fadeOverlay.BackgroundTransparency = 1 - currentFade
-        end
-
-        local px = math.floor(screenPos.X + 0.5)
-        local py = math.floor(screenPos.Y + 0.5)
-        frame.Position = UDim2.fromOffset(px, py)
-
-        glowT = (glowT + dt * 0.35) % 1
-        glowGrad.Offset = Vector2.new(glowT * 2 - 1, 0)
-
-        if outline and outline.Parent then
-            outline.Enabled = true
-            local pulse = math.sin(glowT * math.pi)
-            local sharp = pulse * pulse
-            local r = 100  + (255 - 100)  * sharp
-            local g = 50  + (255 - 50)  * sharp
-            local b = 200 + (255 - 200) * sharp
-            outline.OutlineColor = Color3.fromRGB(math.floor(r), math.floor(g), math.floor(b))
-            outline.OutlineTransparency = currentFade * 0.85
-        end
-    end)
-
-    TagSystem._tags[player] = {
-        frame = frame,
-        glowGrad = glowGrad,
-        fadeOverlay = fadeOverlay,
-        conn = conn,
-        charConn = charConn,
-    }
-end
-
-local function getExecutorName()
-    local probes = {
-        function()
-            if type(identifyexecutor) == "function" then return identifyexecutor() end
-        end,
-        function()
-            if type(getexecutorname) == "function" then return getexecutorname() end
-        end,
-        function()
-            if type(getexecutor) == "function" then return getexecutor() end
-        end,
-        function()
-            if type(identifyexecutor) == "string" then return identifyexecutor end
-        end,
-    }
-    for _, probe in ipairs(probes) do
-        local ok, name = pcall(probe)
-        if ok and type(name) == "string" then
-            local trimmed = name
-            if #trimmed > 0 then return string.sub(trimmed, 1, 64) end
-        end
-    end
-    return "Unknown"
-end
-
-local function tagRegister()
-    if not httpRequest then return end
-    local lp = TagPlayers.LocalPlayer
-    if not lp then return end
-
-    local payload
-    local pok, encoded = pcall(function()
-        return HttpService:JSONEncode({
-            userId      = lp.UserId,
-            displayName = lp.DisplayName,
-            name        = lp.Name,
-            jobId       = game.JobId,
-            placeId     = game.PlaceId,
-            executor    = getExecutorName(),
-        })
-    end)
-    if pok and encoded then
-        payload = encoded
-    else
-        payload = '{"userId":' .. lp.UserId .. '}'
-    end
-
-    local ok, res = pcall(function()
-        return httpRequest({
-            Url     = TAG_REGISTER,
-            Method  = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body    = payload,
-        })
-    end)
-    if not ok or not res or not res.Body then return end
-
-    -- One-shot: report this execution to the worker's launch counter.
-    if not _launchTracked and httpRequest then
-        _launchTracked = true
-        local tname = GAME_TRACK_NAMES[game.PlaceId] or "Unsupported"
-        local tid   = tostring(game.PlaceId)
-        local eid   = getExecutorName()
-        local uid   = tostring(lp.UserId or "")
-        local function escapeQuery(value)
-            value = tostring(value or "")
-            value = string.gsub(value, "%%", "%%25")
-            value = string.gsub(value, " ", "%%20")
-            value = string.gsub(value, "&", "%%26")
-            value = string.gsub(value, "?", "%%3F")
-            return value
-        end
-        local tu = TRACK_LAUNCH_URL .. "?kind=launch&game=" .. escapeQuery(tname)
-            .. "&place_id=" .. tid .. "&user_id=" .. uid .. "&executor=" .. escapeQuery(eid)
-        pcall(function()
-            httpRequest({ Url = tu, Method = "GET" })
-        end)
-    end
-
-    -- If the server has queued this user for an admin kick, comply.
-    local sok, data = pcall(function() return HttpService:JSONDecode(res.Body) end)
-    if sok and type(data) == "table" and data.kick == true then
-        pcall(function() lp:Kick("[Oxide] Disconnected by admin") end)
-    end
-end
-
-local function tagFetchAndUpdate()
-    if not httpRequest then return end
-    local ok, res = pcall(function()
-        return httpRequest({ Url = TAG_USERS, Method = "GET" })
-    end)
-    if not ok or not res or not res.Body then return end
-
-    local sok, data = pcall(function()
-        return HttpService:JSONDecode(res.Body)
-    end)
-    if not sok or type(data) ~= "table" then return end
-
-    local active, userInfo = {}, {}
-    for _, entry in ipairs(data) do
-        local id
-        if type(entry) == "number" then
-            id = entry
-            userInfo[id] = { userId = id, displayName = "", name = "" }
-        elseif type(entry) == "table" then
-            id = tonumber(entry.userId)
-            if id then
-                userInfo[id] = {
-                    userId      = id,
-                    displayName = tostring(entry.displayName or ""),
-                    name        = tostring(entry.name or ""),
-                    jobId       = tostring(entry.jobId or ""),
-                    placeId     = tonumber(entry.placeId) or 0,
-                }
-            end
-        end
-        if id then active[id] = true end
-    end
-    TagSystem._active   = active
-    TagSystem._userInfo = userInfo
-
-    for _, player in ipairs(TagPlayers:GetPlayers()) do
-        if player ~= TagPlayers.LocalPlayer then
-            if active[player.UserId] then
-                addTag(player)
-            else
-                removeTag(player)
-            end
-        end
-    end
-
-    for _, fn in ipairs(TagSystem._listeners) do
-        task.spawn(function() pcall(fn, userInfo, active) end)
-    end
-end
-
-local function startTagSystem()
-    if TagSystem._running then return end
-    TagSystem._running = true
-    ensureTagGui()
-
-    local leaveConn = TagPlayers.PlayerRemoving:Connect(function(player)
-        removeTag(player)
-    end)
-    table.insert(TagSystem._connections, leaveConn)
-
-    -- Poll loop (18s heartbeat prevents network spam)
-    task.spawn(function()
-        while TagSystem._running do
-            tagRegister()
-            tagFetchAndUpdate()
-            task.wait(18)
-        end
-    end)
-end
-
-local function stopTagSystem()
-    TagSystem._running = false
-    for _, conn in ipairs(TagSystem._connections) do
-        pcall(function() conn:Disconnect() end)
-    end
-    table.clear(TagSystem._connections)
-    for player in pairs(TagSystem._tags) do
-        removeTag(player)
-    end
-    table.clear(TagSystem._active)
-    table.clear(TagSystem._userInfo)
-    if TagSystem._screenGui and TagSystem._screenGui.Parent then
-        TagSystem._screenGui:Destroy()
-    end
-    TagSystem._screenGui = nil
-end
-
-function Oxide:StartTagSystem()
-    startTagSystem()
-end
-function Oxide:StopTagSystem()
-    stopTagSystem()
-end
-
 local DEFAULT_OXIDE_NOTIFICATION_LOGO = "108040120753581"
 local Oxide = {
     NotificationIcon = DEFAULT_OXIDE_NOTIFICATION_LOGO,
-    TagSystem = TagSystem,
 }
 
 function Oxide:GetIcon(name)
@@ -2309,8 +1898,6 @@ function Oxide:Window(GuiConfig)
         if toggleGui then toggleGui:Destroy() end
         local notifyGui = CoreGui:FindFirstChild("NotifyGui")
         if notifyGui then notifyGui:Destroy() end
-        -- Stop the Koyeb tag service + live tracking when the window closes.
-        pcall(stopTagSystem)
         if not guiAlreadyDestroying and OxideOnTop and OxideOnTop.Parent then
             OxideOnTop:Destroy()
         end
@@ -2517,6 +2104,56 @@ function Oxide:Window(GuiConfig)
         DropShadowHolder.Visible = true
         MinimizedBar.Visible = false
     end)
+
+    -- K-key toggle for performance + music panels
+    local panelsToggled = false
+    trackCleanup(UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode == Enum.KeyCode.K then
+            panelsToggled = not panelsToggled
+            -- LivePerformance
+            local perf = OxideOnTop:FindFirstChild("LivePerformance")
+            if perf then
+                perf.Visible = panelsToggled
+                perf.GroupTransparency = panelsToggled and 0 or 1
+                perf.Position = panelsToggled and perfOpenPos or perfClosedPos
+            end
+            -- MusicPlayer
+            local music = OxideOnTop:FindFirstChild("MusicPlayer")
+            if music then
+                music.Visible = panelsToggled
+                music.GroupTransparency = panelsToggled and 0 or 1
+                music.Position = panelsToggled and musicOpenPos or musicClosedPos
+                -- also update the music toggle button visual
+                if ctx and ctx.musicToggleBtn then
+                    ctx.musicToggleBtn.BackgroundColor3 = panelsToggled and Color3.fromRGB(36,36,36) or Color3.fromRGB(42,42,42)
+                end
+            end
+        end
+    end))
+
+    -- Live client tracker (koyeb-style) — minimal ping/FPS pill
+
+    -- Live client tracker (koyeb-style) — minimal ping/FPS pill
+    local function KoyebPing()
+        local Stats = game:GetService("Stats")
+        local net = Stats:FindFirstChild("Network")
+        if not net then return "0ms" end
+        local item = net:FindFirstChild("ServerStatsItem")
+        if not item then return "0ms" end
+        local data = item:FindFirstChild("Data Ping")
+        if not data then return "0ms" end
+        return tostring(math.round(data:GetValue())) .. "ms"
+    end
+    local minimizedPingThread = task.spawn(function()
+        while not isDestroyed do
+            task.wait(0.5)
+            if MinimizedBar and MinimizedBar.Visible then
+                MinimizedPingLabel.Text = KoyebPing()
+            end
+        end
+    end)
+    trackCleanup(minimizedPingThread)
 
     -- Live metrics for the minimized pill (same as Libary.lua)
     local MinimizedStats = game:GetService("Stats")
@@ -2731,9 +2368,6 @@ function Oxide:Window(GuiConfig)
         end)
     end)
 
-    -- Profile panels toggle (K, like the old UI); assigned below.
-    local ToggleProfilePanels
-
     -- Press Alt to minimize/restore the UI; override with
     -- GuiConfig.ToggleKey (an EnumItem).
     local ToggleKey = typeof(GuiConfig.ToggleKey) == "EnumItem" and GuiConfig.ToggleKey or Enum.KeyCode.LeftAlt
@@ -2742,18 +2376,6 @@ function Oxide:Window(GuiConfig)
         if not loadingComplete then return end
         if input.KeyCode == ToggleKey then
             ToggleWindowVisibility()
-        end
-    end))
-
-    -- Press K to open/close the profile + live performance panels (old UI
-    -- behavior); override with GuiConfig.ProfileKey (an EnumItem).
-    local ProfileKey = typeof(GuiConfig.ProfileKey) == "EnumItem" and GuiConfig.ProfileKey or Enum.KeyCode.K
-    trackCleanup(UserInputService.InputBegan:Connect(function(input, gpe)
-        if isDestroyed or gpe then return end
-        if not loadingComplete then return end
-        if UserInputService:GetFocusedTextBox() then return end
-        if input.KeyCode == ProfileKey and ToggleProfilePanels then
-            ToggleProfilePanels()
         end
     end))
 
@@ -3181,7 +2803,7 @@ function Oxide:Window(GuiConfig)
             SectionReal.BackgroundTransparency = 1
             SectionReal.BorderSizePixel = 0
             SectionReal.Position = UDim2.fromOffset(0, 0)
-            SectionReal.Size = UDim2.new(1, 0, 0, SectionConfig.HideTitle and 0 or 20)
+            SectionReal.Size = UDim2.new(1, 0, 0, SectionConfig.HideTitle and 0 or 24)
             SectionReal.Parent = Section
 
             local SectionTitle = Instance.new("TextLabel")
@@ -3198,12 +2820,12 @@ function Oxide:Window(GuiConfig)
             SectionTitle.TextYAlignment = Enum.TextYAlignment.Top
             SectionTitle.BackgroundTransparency = 1
             -- Lower only the title text; the section box geometry stays fixed.
-            SectionTitle.Position = UDim2.fromOffset(6, 1)
+            SectionTitle.Position = UDim2.fromOffset(6, 2)
             SectionTitle.Size = UDim2.new(1, -12, 0, 18)
             SectionTitle.Visible = not SectionConfig.HideTitle
             SectionTitle.Parent = SectionReal
 
-            local SectionContentOffset = SectionConfig.HideTitle and 0 or 20
+            local SectionContentOffset = SectionConfig.HideTitle and 0 or 24
             local SectionAdd = Instance.new("Frame")
             SectionAdd.Name = "SectionAdd"
             SectionAdd.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
@@ -3247,8 +2869,8 @@ function Oxide:Window(GuiConfig)
             RowsLayout.Parent = SectionAdd
 
             local UIPadding = Instance.new("UIPadding")
-            UIPadding.PaddingTop = UDim.new(0, 4)
-            UIPadding.PaddingBottom = UDim.new(0, 8)
+            UIPadding.PaddingTop = UDim.new(0, 6)
+            UIPadding.PaddingBottom = UDim.new(0, 10)
             UIPadding.PaddingLeft = UDim.new(0, 8)
             UIPadding.PaddingRight = UDim.new(0, 8)
             UIPadding.Parent = SectionAdd
@@ -3602,7 +3224,7 @@ function Oxide:Window(GuiConfig)
                 Paragraph.BackgroundTransparency = 0.935
                 Paragraph.BorderSizePixel = 0
                 Paragraph.LayoutOrder = CountItem
-                Paragraph.Size = UDim2.new(1, 0, 0, 40)
+                Paragraph.Size = UDim2.new(1, 0, 0, 46)
                 Paragraph.Name = "Paragraph"
                 MountSectionItem(Paragraph, ParagraphConfig, true)
 
@@ -3615,7 +3237,7 @@ function Oxide:Window(GuiConfig)
                 if ParagraphConfig.Icon then
                     IconImg = Instance.new("ImageLabel")
                     IconImg.Size = UDim2.fromOffset(paragraphIconSize, paragraphIconSize)
-                    IconImg.Position = UDim2.new(0, 8, 0, 8)
+                    IconImg.Position = UDim2.new(0, 8, 0, 10)
                     IconImg.BackgroundTransparency = 1
                     IconImg.Name = "ParagraphIcon"
                     IconImg.Parent = Paragraph
@@ -3633,7 +3255,7 @@ function Oxide:Window(GuiConfig)
                 ParagraphTitle.TextXAlignment = Enum.TextXAlignment.Left
                 ParagraphTitle.TextYAlignment = Enum.TextYAlignment.Top
                 ParagraphTitle.BackgroundTransparency = 1
-                ParagraphTitle.Position = UDim2.new(0, iconOffset, 0, 8)
+                ParagraphTitle.Position = UDim2.new(0, iconOffset, 0, 10)
                 ParagraphTitle.Size = UDim2.new(1, -(iconOffset + 8), 0, 13)
                 ParagraphTitle.Name = "ParagraphTitle"
                 ParagraphTitle.Parent = Paragraph
@@ -3645,7 +3267,7 @@ function Oxide:Window(GuiConfig)
                 ParagraphContent.TextXAlignment = Enum.TextXAlignment.Left
                 ParagraphContent.TextYAlignment = Enum.TextYAlignment.Top
                 ParagraphContent.BackgroundTransparency = 1
-                ParagraphContent.Position = UDim2.new(0, iconOffset, 0, 21)
+                ParagraphContent.Position = UDim2.new(0, iconOffset, 0, 25)
                 ParagraphContent.Name = "ParagraphContent"
                 ParagraphContent.TextWrapped = true
                 ParagraphContent.RichText = true
@@ -3656,7 +3278,7 @@ function Oxide:Window(GuiConfig)
                 local ParagraphButton
                 if ParagraphConfig.ButtonText then
                     ParagraphButton = Instance.new("TextButton")
-                    ParagraphButton.Position = UDim2.new(0, 10, 0, 36)
+                    ParagraphButton.Position = UDim2.new(0, 10, 0, 42)
                     ParagraphButton.Size = UDim2.new(1, -22, 0, 28)
                     ParagraphButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
                     ParagraphButton.BackgroundTransparency = 0.935
@@ -3687,16 +3309,16 @@ function Oxide:Window(GuiConfig)
                     local contentBottom = ParagraphContent.Position.Y.Offset + contentHeight
                     local totalHeight
                     if ParagraphButton then
-                        ParagraphButton.Position = UDim2.new(0, 10, 0, contentBottom + 6)
-                        totalHeight = ParagraphButton.Position.Y.Offset + ParagraphButton.Size.Y.Offset + 8
+                        ParagraphButton.Position = UDim2.new(0, 10, 0, contentBottom + 8)
+                        totalHeight = ParagraphButton.Position.Y.Offset + ParagraphButton.Size.Y.Offset + 10
                     else
-                        totalHeight = contentBottom + 8
+                        totalHeight = contentBottom + 10
                     end
 
                     -- Keep enough room for the optional icon even with very
                     -- short content, while expanding naturally for long text.
-                    local iconMinHeight = IconImg and (IconImg.Position.Y.Offset + paragraphIconSize + 8) or 40
-                    Paragraph.Size = UDim2.new(1, 0, 0, math.max(totalHeight, 40, iconMinHeight))
+                    local iconMinHeight = IconImg and (IconImg.Position.Y.Offset + paragraphIconSize + 10) or 46
+                    Paragraph.Size = UDim2.new(1, 0, 0, math.max(totalHeight, 46, iconMinHeight))
                     updatingParagraph = false
                 end
 
@@ -3745,16 +3367,16 @@ function Oxide:Window(GuiConfig)
 
                 local PanelFunc = { Value = PanelConfig.Default }
 
-                local baseHeight = 44
+                local baseHeight = 50
 
                 if PanelConfig.Placeholder then
-                    baseHeight = baseHeight + 36
+                    baseHeight = baseHeight + 40
                 end
 
                 if PanelConfig.SubButtonText then
-                    baseHeight = baseHeight + 36
+                    baseHeight = baseHeight + 40
                 else
-                    baseHeight = baseHeight + 32
+                    baseHeight = baseHeight + 36
                 end
 
                 local Panel = Instance.new("Frame")
@@ -3788,7 +3410,7 @@ function Oxide:Window(GuiConfig)
                 Content.TextXAlignment = Enum.TextXAlignment.Left
                 Content.BackgroundTransparency = 1
                 Content.RichText = true
-                Content.Position = UDim2.new(0, 10, 0, 26)
+                Content.Position = UDim2.new(0, 10, 0, 28)
                 Content.Size = UDim2.new(1, -20, 0, 14)
                 Content.Parent = Panel
 
@@ -3798,7 +3420,7 @@ function Oxide:Window(GuiConfig)
                     InputFrame.AnchorPoint = Vector2.new(0.5, 0)
                     InputFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
                     InputFrame.BackgroundTransparency = 0.95
-                    InputFrame.Position = UDim2.new(0.5, 0, 0, 44)
+                    InputFrame.Position = UDim2.new(0.5, 0, 0, 48)
                     InputFrame.Size = UDim2.new(1, -20, 0, 30)
                     InputFrame.Parent = Panel
 
@@ -3835,7 +3457,7 @@ function Oxide:Window(GuiConfig)
                 ButtonMain.TextTransparency = 0.3
                 ButtonMain.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
                 ButtonMain.BackgroundTransparency = 0.935
-                ButtonMain.Size = PanelConfig.SubButtonText and UDim2.new(0.5, -12, 0, 28) or UDim2.new(1, -20, 0, 28)
+                ButtonMain.Size = PanelConfig.SubButtonText and UDim2.new(0.5, -12, 0, 30) or UDim2.new(1, -20, 0, 30)
                 ButtonMain.Position = UDim2.new(0, 10, 0, yBtn)
                 ButtonMain.Parent = Panel
 
@@ -3856,7 +3478,7 @@ function Oxide:Window(GuiConfig)
                     SubButton.TextTransparency = 0.3
                     SubButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
                     SubButton.BackgroundTransparency = 0.935
-                    SubButton.Size = UDim2.new(0.5, -12, 0, 28)
+                    SubButton.Size = UDim2.new(0.5, -12, 0, 30)
                     SubButton.Position = UDim2.new(0.5, 2, 0, yBtn)
                     SubButton.Parent = Panel
 
@@ -3897,7 +3519,7 @@ function Oxide:Window(GuiConfig)
                 local Button = Instance.new("Frame")
                 Button.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
                 Button.BackgroundTransparency = 1
-                Button.Size = UDim2.new(1, 0, 0, 34)
+                Button.Size = UDim2.new(1, 0, 0, 40)
                 Button.LayoutOrder = CountItem
                 MountSectionItem(Button, ButtonConfig, true)
 
@@ -4098,7 +3720,7 @@ function Oxide:Window(GuiConfig)
                 ToggleTitle2.TextXAlignment = Enum.TextXAlignment.Left
                 ToggleTitle2.TextYAlignment = Enum.TextYAlignment.Top
                 ToggleTitle2.BackgroundTransparency = 1
-                ToggleTitle2.Position = UDim2.new(0, 10, 0, 20)
+                ToggleTitle2.Position = UDim2.new(0, 10, 0, 23)
                 ToggleTitle2.Size = UDim2.new(1, -toggleTextRightInset, 0, 12)
                 ToggleTitle2.Name = "ToggleTitle2"
                 ToggleTitle2.Parent = Toggle
@@ -4126,26 +3748,26 @@ function Oxide:Window(GuiConfig)
 
                     if not hasDescription and not hasTitle2 then
                         -- Two compact title-only toggles plus the default 2px
-                        -- ItemGap total exactly 64px, matching one dropdown.
-                        Toggle.Size = UDim2.new(1, 0, 0, 31)
+                        -- ItemGap total exactly 76px, matching one dropdown.
+                        Toggle.Size = UDim2.new(1, 0, 0, 37)
                         ToggleTitle.Position = UDim2.fromOffset(10, 0)
                         ToggleTitle.Size = UDim2.new(1, -toggleTextRightInset, 1, 0)
                         ToggleTitle.TextYAlignment = Enum.TextYAlignment.Center
                         ToggleTitle2.Visible = false
                         ToggleContent.Visible = false
                     else
-                        ToggleTitle.Position = UDim2.fromOffset(10, 5)
+                        ToggleTitle.Position = UDim2.fromOffset(10, 7)
                         ToggleTitle.Size = UDim2.new(1, -toggleTextRightInset, 0, 14)
                         ToggleTitle.TextYAlignment = Enum.TextYAlignment.Top
 
                         local descriptionY
                         if hasTitle2 then
                             ToggleTitle2.Visible = true
-                            ToggleTitle2.Position = UDim2.fromOffset(10, 18)
-                            descriptionY = 32
+                            ToggleTitle2.Position = UDim2.fromOffset(10, 21)
+                            descriptionY = 36
                         else
                             ToggleTitle2.Visible = false
-                            descriptionY = 20
+                            descriptionY = 23
                         end
 
                         if hasDescription then
@@ -4153,10 +3775,10 @@ function Oxide:Window(GuiConfig)
                             ToggleContent.Position = UDim2.fromOffset(10, descriptionY)
                             local contentHeight = math.max(12, math.ceil(ToggleContent.TextBounds.Y))
                             ToggleContent.Size = UDim2.new(1, -toggleTextRightInset, 0, contentHeight)
-                            Toggle.Size = UDim2.new(1, 0, 0, descriptionY + contentHeight + 7)
+                            Toggle.Size = UDim2.new(1, 0, 0, descriptionY + contentHeight + 9)
                         else
                             ToggleContent.Visible = false
-                            Toggle.Size = UDim2.new(1, 0, 0, 36)
+                            Toggle.Size = UDim2.new(1, 0, 0, 42)
                         end
                     end
 
@@ -4418,7 +4040,7 @@ function Oxide:Window(GuiConfig)
                 Slider.BorderColor3 = Color3.fromRGB(0, 0, 0)
                 Slider.BorderSizePixel = 0
                 Slider.LayoutOrder = CountItem
-                Slider.Size = UDim2.new(1, 0, 0, 40)
+                Slider.Size = UDim2.new(1, 0, 0, 46)
                 Slider.Name = "Slider"
                 MountSectionItem(Slider, SliderConfig, true)
 
@@ -4435,7 +4057,7 @@ function Oxide:Window(GuiConfig)
                 SliderTitle.BackgroundTransparency = 0.9990000128746033
                 SliderTitle.BorderColor3 = Color3.fromRGB(0, 0, 0)
                 SliderTitle.BorderSizePixel = 0
-                SliderTitle.Position = UDim2.new(0, 10, 0, 8)
+                SliderTitle.Position = UDim2.new(0, 10, 0, 10)
                 SliderTitle.Size = (SliderConfig.FullWidth ~= false)
                     and UDim2.new(1, -180, 0, 13)
                     or UDim2.new(1, -20, 0, 13)
@@ -4453,7 +4075,7 @@ function Oxide:Window(GuiConfig)
                 SliderContent.BackgroundTransparency = 0.9990000128746033
                 SliderContent.BorderColor3 = Color3.fromRGB(0, 0, 0)
                 SliderContent.BorderSizePixel = 0
-                SliderContent.Position = UDim2.new(0, 10, 0, 21)
+                SliderContent.Position = UDim2.new(0, 10, 0, 25)
                 SliderContent.Size = (SliderConfig.FullWidth ~= false)
                     and UDim2.new(1, -180, 0, 12)
                     or UDim2.new(1, -20, 0, 12)
@@ -4461,7 +4083,7 @@ function Oxide:Window(GuiConfig)
                 SliderContent.Parent = Slider
 
                 local sliderTextWidthOffset = (SliderConfig.FullWidth ~= false) and -180 or -20
-                local sliderBottomPadding = (SliderConfig.FullWidth ~= false) and 27 or 52
+                local sliderBottomPadding = (SliderConfig.FullWidth ~= false) and 33 or 58
                 SliderContent.Size = UDim2.new(1, sliderTextWidthOffset, 0,
                     12 + (12 * (SliderContent.TextBounds.X // math.max(1, SliderContent.AbsoluteSize.X))))
                 SliderContent.TextWrapped = true
@@ -4710,7 +4332,7 @@ function Oxide:Window(GuiConfig)
                 Input.BorderColor3 = Color3.fromRGB(0, 0, 0)
                 Input.BorderSizePixel = 0
                 Input.LayoutOrder = CountItem
-                Input.Size = UDim2.new(1, 0, 0, 40)
+                Input.Size = UDim2.new(1, 0, 0, 46)
                 Input.Name = "Input"
                 MountSectionItem(Input, InputConfig, true)
 
@@ -4727,7 +4349,7 @@ function Oxide:Window(GuiConfig)
                 InputTitle.BackgroundTransparency = 0.9990000128746033
                 InputTitle.BorderColor3 = Color3.fromRGB(0, 0, 0)
                 InputTitle.BorderSizePixel = 0
-                InputTitle.Position = UDim2.new(0, 10, 0, 8)
+                InputTitle.Position = UDim2.new(0, 10, 0, 10)
                 InputTitle.Size = UDim2.new(1, -20, 0, 13)
                 InputTitle.Name = "InputTitle"
                 InputTitle.Parent = Input
@@ -4744,7 +4366,7 @@ function Oxide:Window(GuiConfig)
                 InputContent.BackgroundTransparency = 0.9990000128746033
                 InputContent.BorderColor3 = Color3.fromRGB(0, 0, 0)
                 InputContent.BorderSizePixel = 0
-                InputContent.Position = UDim2.new(0, 10, 0, 21)
+                InputContent.Position = UDim2.new(0, 10, 0, 25)
                 InputContent.Size = UDim2.new(1, -20, 0, 12)
                 InputContent.Name = "InputContent"
                 InputContent.Parent = Input
@@ -4752,12 +4374,12 @@ function Oxide:Window(GuiConfig)
                 if InputConfig.Content == "" then
                     InputContent.Visible = false
                     InputContent.Size = UDim2.new(1, -20, 0, 0)
-                    Input.Size = UDim2.new(1, 0, 0, 66)
+                    Input.Size = UDim2.new(1, 0, 0, 73)
                 else
                     InputContent.Size = UDim2.new(1, -20, 0,
                         12 + (12 * (InputContent.TextBounds.X // math.max(1, InputContent.AbsoluteSize.X))))
                     InputContent.TextWrapped = true
-                    Input.Size = UDim2.new(1, 0, 0, InputContent.AbsoluteSize.Y + 68)
+                    Input.Size = UDim2.new(1, 0, 0, InputContent.AbsoluteSize.Y + 75)
                 end
 
                 InputContent:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
@@ -4765,8 +4387,8 @@ function Oxide:Window(GuiConfig)
                         InputContent.TextWrapped = false
                         InputContent.Size = UDim2.new(1, -20, 0,
                             12 + (12 * (InputContent.TextBounds.X // math.max(1, InputContent.AbsoluteSize.X))))
-                        Input.Size = UDim2.new(1, 0, 0, InputContent.AbsoluteSize.Y + 68)
-                        InputFrame.Position = UDim2.new(0.5, 0, 0, InputContent.Position.Y.Offset + InputContent.AbsoluteSize.Y + 8)
+                        Input.Size = UDim2.new(1, 0, 0, InputContent.AbsoluteSize.Y + 75)
+                        InputFrame.Position = UDim2.new(0.5, 0, 0, InputContent.Position.Y.Offset + InputContent.AbsoluteSize.Y + 10)
                         InputContent.TextWrapped = true
                         UpdateSizeSection()
                     end
@@ -4779,9 +4401,9 @@ function Oxide:Window(GuiConfig)
                 InputFrame.BorderSizePixel = 0
                 InputFrame.ClipsDescendants = true
                 if InputConfig.Content == "" then
-                    InputFrame.Position = UDim2.new(0.5, 0, 0, 29)
+                    InputFrame.Position = UDim2.new(0.5, 0, 0, 33)
                 else
-                    InputFrame.Position = UDim2.new(0.5, 0, 0, InputContent.Position.Y.Offset + InputContent.AbsoluteSize.Y + 8)
+                    InputFrame.Position = UDim2.new(0.5, 0, 0, InputContent.Position.Y.Offset + InputContent.AbsoluteSize.Y + 10)
                 end
                 InputFrame.Size = UDim2.new(1, -20, 0, 30)
                 InputFrame.Name = "InputFrame"
@@ -4856,10 +4478,10 @@ function Oxide:Window(GuiConfig)
                 Dropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
                 Dropdown.BackgroundTransparency = 0.935
                 Dropdown.BorderSizePixel = 0
-                -- The compact popup may extend below the 40px dropdown row.
+                -- The compact popup may extend below the 46px dropdown row.
                 Dropdown.ClipsDescendants = false
                 Dropdown.LayoutOrder = CountItem
-                Dropdown.Size = UDim2.new(1, 0, 0, 40)
+                Dropdown.Size = UDim2.new(1, 0, 0, 46)
                 Dropdown.Name = "Dropdown"
                 MountSectionItem(Dropdown, DropdownConfig, true)
 
@@ -4876,7 +4498,7 @@ function Oxide:Window(GuiConfig)
                 DropdownTitle.TextSize = 13
                 DropdownTitle.TextXAlignment = Enum.TextXAlignment.Left
                 DropdownTitle.BackgroundTransparency = 1
-                DropdownTitle.Position = UDim2.new(0, 10, 0, 8)
+                DropdownTitle.Position = UDim2.new(0, 10, 0, 10)
                 DropdownTitle.Size = (DropdownConfig.FullWidth ~= false)
                     and UDim2.new(1, -180, 0, 13)
                     or UDim2.new(1, -20, 0, 13)
@@ -4891,7 +4513,7 @@ function Oxide:Window(GuiConfig)
                 DropdownContent.TextWrapped = true
                 DropdownContent.TextXAlignment = Enum.TextXAlignment.Left
                 DropdownContent.BackgroundTransparency = 1
-                DropdownContent.Position = UDim2.new(0, 10, 0, 21)
+                DropdownContent.Position = UDim2.new(0, 10, 0, 25)
                 DropdownContent.Size = (DropdownConfig.FullWidth ~= false)
                     and UDim2.new(1, -180, 0, 12)
                     or UDim2.new(1, -20, 0, 12)
@@ -4899,15 +4521,15 @@ function Oxide:Window(GuiConfig)
                 DropdownContent.Parent = Dropdown
 
                 if DropdownConfig.FullWidth ~= false then
-                    Dropdown.Size = UDim2.new(1, 0, 0, 40)
+                    Dropdown.Size = UDim2.new(1, 0, 0, 46)
                     SelectOptionsFrame.AnchorPoint = Vector2.new(1, 0.5)
                     SelectOptionsFrame.Position = UDim2.new(1, -7, 0.5, 0)
-                    SelectOptionsFrame.Size = UDim2.new(0, 148, 0, 26)
+                    SelectOptionsFrame.Size = UDim2.new(0, 148, 0, 30)
                 else
-                    Dropdown.Size = UDim2.new(1, 0, 0, 64)
+                    Dropdown.Size = UDim2.new(1, 0, 0, 76)
                     SelectOptionsFrame.AnchorPoint = Vector2.new(0.5, 1)
                     SelectOptionsFrame.Position = UDim2.new(0.5, 0, 1, -7)
-                    SelectOptionsFrame.Size = UDim2.new(1, -20, 0, 24)
+                    SelectOptionsFrame.Size = UDim2.new(1, -20, 0, 28)
                 end
                 SelectOptionsFrame.BackgroundColor3 = Color3.fromRGB(31, 31, 31)
                 SelectOptionsFrame.BackgroundTransparency = 0
@@ -5309,7 +4931,7 @@ function Oxide:Window(GuiConfig)
 
                     Option.BackgroundColor3 = Color3.fromRGB(31, 31, 31)
                     Option.BackgroundTransparency = 1
-                    Option.Size = UDim2.new(1, -2, 0, 26)
+                    Option.Size = UDim2.new(1, -2, 0, 30)
                     Option.Name = "Option"
                     Option.ZIndex = 104
                     Option.Parent = ScrollSelect
@@ -5519,14 +5141,142 @@ function Oxide:Window(GuiConfig)
                 return SubSection
             end
 
+            -- Compat shims for old V1 scripts (Name->Title, Flag, AddMultiDropdown)
+            do
+                local function wrapFlag(ret, cfg)
+                    local flag = cfg and cfg.Flag
+                    if flag and ret then
+                        Elements[flag] = ret
+                        windowElementKeys[flag] = true
+                        if ConfigData[flag] ~= nil and ret.Set then
+                            pcall(function() ret:Set(ConfigData[flag], true) end)
+                        end
+                        local origSet, origGet = ret.Set, ret.Get
+                        if origSet then
+                            ret.Set = function(_, v, noSave)
+                                local ok = pcall(origSet, ret, v, noSave)
+                                ConfigData[flag] = v
+                                if not noSave then SaveConfig() end
+                                return ok
+                            end
+                        end
+                        if origGet then
+                            local og = origGet
+                            ret.Get = function() return ConfigData[flag] end
+                        end
+                        -- also ensure Get returns Flag value
+                        ret.Flag = flag
+                    end
+                    return ret
+                end
+                local origAddToggle = Items.AddToggle
+                if origAddToggle then
+                    Items.AddToggle = function(self, cfg)
+                        cfg = cfg or {}
+                        cfg.Title = cfg.Title or cfg.Name or "Toggle"
+                        cfg.Content = cfg.Content or cfg.Description or ""
+                        local ret = origAddToggle(self, cfg)
+                        return wrapFlag(ret, cfg)
+                    end
+                end
+                local origAddSlider = Items.AddSlider
+                if origAddSlider then
+                    Items.AddSlider = function(self, cfg)
+                        cfg = cfg or {}
+                        cfg.Title = cfg.Title or cfg.Name or "Slider"
+                        cfg.Suffix = cfg.Suffix or cfg.Unit or ""
+                        local ret = origAddSlider(self, cfg)
+                        return wrapFlag(ret, cfg)
+                    end
+                end
+                local origAddDropdown = Items.AddDropdown
+                if origAddDropdown then
+                    Items.AddDropdown = function(self, cfg)
+                        cfg = cfg or {}
+                        cfg.Title = cfg.Title or cfg.Name or "Dropdown"
+                        cfg.Options = cfg.Options or cfg.Items or {}
+                        if cfg.Default == nil and cfg.Value ~= nil then cfg.Default = cfg.Value end
+                        local ret = origAddDropdown(self, cfg)
+                        return wrapFlag(ret, cfg)
+                    end
+                    Items.AddMultiDropdown = function(self, cfg)
+                        cfg = cfg or {}
+                        cfg.Multi = true
+                        cfg.Title = cfg.Title or cfg.Name or "Dropdown"
+                        cfg.Options = cfg.Options or cfg.Items or {}
+                        if cfg.Default == nil and cfg.Value ~= nil then cfg.Default = cfg.Value end
+                        local ret = origAddDropdown(self, cfg)
+                        return wrapFlag(ret, cfg)
+                    end
+                end
+                local origAddButton = Items.AddButton
+                if origAddButton then
+                    Items.AddButton = function(self, cfg)
+                        cfg = cfg or {}
+                        cfg.Title = cfg.Title or cfg.Name or "Button"
+                        return origAddButton(self, cfg)
+                    end
+                end
+                local origAddInput = Items.AddInput
+                if origAddInput then
+                    Items.AddInput = function(self, cfg)
+                        cfg = cfg or {}
+                        cfg.Title = cfg.Title or cfg.Name or "Input"
+                        cfg.Content = cfg.Content or cfg.Description or ""
+                        local ret = origAddInput(self, cfg)
+                        return wrapFlag(ret, cfg)
+                    end
+                end
+                local origAddKeybind = Items.AddKeybind
+                if origAddKeybind then
+                    Items.AddKeybind = function(self, cfg)
+                        cfg = cfg or {}
+                        cfg.Title = cfg.Title or cfg.Name or "Keybind"
+                        local ret = origAddKeybind(self, cfg)
+                        return wrapFlag(ret, cfg)
+                    end
+                end
+                if not Items.AddLabel then
+                    Items.AddLabel = function(self, cfg)
+                        if type(cfg)=="string" then cfg={Title=cfg} end
+                        cfg.Title = cfg.Title or cfg.Text or "Label"
+                        if Items.AddParagraph then return Items:AddParagraph(cfg) end
+                    end
+                end
+                if not Items.AddParagraph then
+                    Items.AddParagraph = function() end
+                end
+                if not Items.AddDivider then
+                    Items.AddDivider = function(self) 
+                        local f=Instance.new("Frame", self._sectionAdd or self)
+                        f.Size=UDim2.new(1,0,0,1)
+                        f.BackgroundColor3=Color3.fromRGB(35,35,35)
+                        return f
+                    end
+                end
+            end
             CountSection = CountSection + 1
             return Items
         end
+        -- Compat: old scripts use Tab:AddSubTab, new uses Tab:AddSection
+        Sections.AddSubTab = Sections.AddSection
 
         CountTab = CountTab + 1
         local safeName = TabConfig.Name:gsub("%s+", "_")
         _G[safeName] = Sections
         return Sections
+    end
+
+    -- Compat: old scripts use Window:Notify, new uses Oxide:MakeNotify
+    function Tabs:Notify(cfg)
+        cfg = cfg or {}
+        return Oxide:MakeNotify({
+            Title = cfg.Title or "Oxide",
+            Description = cfg.Description or cfg.Content or "",
+            Content = cfg.Content or cfg.Description or "",
+            Color = cfg.Color,
+            Delay = cfg.Duration or cfg.Delay or 3,
+        })
     end
 
     if GuiConfig.BuiltInInfo then
@@ -6071,585 +5821,24 @@ function Oxide:Window(GuiConfig)
         end)
     end
 
-    -- ════════════════════════════════════════════════════════════════
-    -- PROFILE + LIVE PERFORMANCE PANELS (K to toggle, old UI style)
-    -- ════════════════════════════════════════════════════════════════
-    local profileWidth     = math.max(280, tonumber(GuiConfig.ProfileWidth) or 300)
-    local bottomMargin     = math.max(10, tonumber(GuiConfig.ProfileBottomMargin) or 18)
-    local profileOpenPos   = UDim2.new(1, -18, 1, -bottomMargin)
-    local profileClosedPos = UDim2.new(1, profileWidth + 28, 1, -bottomMargin)
-    local profileOpen      = false
-    local PROFILE_TWEEN    = TweenInfo.new(0.32, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-
-    local PANEL_ACC       = ThemeColors.Accent
-    local PANEL_WHITE     = Color3.fromRGB(255, 255, 255)
-    local PANEL_TEXT_GRAY = Color3.fromRGB(154, 154, 154)
-    local PANEL_TEXT_DIM  = Color3.fromRGB(139, 139, 139)
-    local PANEL_ELEMENT   = Color3.fromRGB(31, 31, 31)
-    local PANEL_CARD      = Color3.fromRGB(24, 24, 24)
-    local PANEL_BORDER    = ThemeColors.Border
-    local PANEL_BADGE     = Color3.fromRGB(42, 42, 42)
-    local PANEL_BADGE_IDLE= Color3.fromRGB(34, 34, 34)
-    local PANEL_GREEN     = Color3.fromRGB(105, 166, 124)
-
-    local function panelCorner(inst, radius)
-        Instance.new("UICorner", inst).CornerRadius = UDim.new(0, radius)
+    -- ============================================================
+        do
+        local ctx = {
+            OxideOnTop = OxideOnTop,
+            RightContainer = RightContainer,
+            ThemeColors = ThemeColors,
+            TweenService = TweenService,
+            RunService = RunService,
+            UserInputService = UserInputService,
+            trackCleanup = trackCleanup,
+            isDestroyedRef = function() return isDestroyed end,
+            bottomMargin = 18,
+            panelGap = 12,
+            PROFILE_TWEEN = PROFILE_TWEEN,
+        }
+        pcall(buildPerfPanelV2, ctx)
+        pcall(buildMusicPanelV2, ctx)
     end
-    local function panelStroke(inst, color)
-        local s = Instance.new("UIStroke")
-        s.Color = color
-        s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        s.Parent = inst
-    end
-
-    -- ── Profile panel ────────────────────────────────────────────────────
-    local ProfilePanel = Instance.new("CanvasGroup")
-    ProfilePanel.Name = "UserProfile"
-    ProfilePanel.AnchorPoint = Vector2.new(1, 1)
-    ProfilePanel.Position = profileClosedPos
-    ProfilePanel.Size = UDim2.fromOffset(profileWidth, 330)
-    ProfilePanel.BackgroundColor3 = PANEL_CARD
-    ProfilePanel.GroupTransparency = 1
-    ProfilePanel.ClipsDescendants = true
-    ProfilePanel.ZIndex = 150
-    ProfilePanel.Parent = OxideOnTop
-    panelCorner(ProfilePanel, 14)
-
-    local profileHeader = Instance.new("Frame")
-    profileHeader.Size = UDim2.new(1, 0, 0, 60)
-    profileHeader.BackgroundTransparency = 1
-    profileHeader.ZIndex = 151
-    profileHeader.Parent = ProfilePanel
-    local profileTitle = Instance.new("TextLabel")
-    profileTitle.Text = tostring(GuiConfig.ProfileTitle or "PLAYER PROFILE")
-    profileTitle.Font = Enum.Font.GothamBold
-    profileTitle.TextSize = 13
-    profileTitle.TextColor3 = PANEL_WHITE
-    profileTitle.TextXAlignment = Enum.TextXAlignment.Left
-    profileTitle.BackgroundTransparency = 1
-    profileTitle.Position = UDim2.fromOffset(18, 12)
-    profileTitle.Size = UDim2.new(1, -36, 0, 18)
-    profileTitle.ZIndex = 152
-    profileTitle.Parent = profileHeader
-    local profileSub = Instance.new("TextLabel")
-    profileSub.Text = "Live session overview"
-    profileSub.Font = Enum.Font.Gotham
-    profileSub.TextSize = 10
-    profileSub.TextColor3 = PANEL_TEXT_DIM
-    profileSub.TextXAlignment = Enum.TextXAlignment.Left
-    profileSub.BackgroundTransparency = 1
-    profileSub.Position = UDim2.fromOffset(18, 32)
-    profileSub.Size = UDim2.new(1, -36, 0, 15)
-    profileSub.ZIndex = 152
-    profileSub.Parent = profileHeader
-    local profileHeaderLine = Instance.new("Frame")
-    profileHeaderLine.Position = UDim2.new(0, 18, 1, -1)
-    profileHeaderLine.Size = UDim2.new(1, -36, 0, 1)
-    profileHeaderLine.BackgroundColor3 = PANEL_BORDER
-    profileHeaderLine.ZIndex = 151
-    profileHeaderLine.Parent = profileHeader
-
-    local identityCard = Instance.new("Frame")
-    identityCard.Position = UDim2.fromOffset(16, 72)
-    identityCard.Size = UDim2.new(1, -32, 0, 106)
-    identityCard.BackgroundColor3 = PANEL_ELEMENT
-    identityCard.ZIndex = 151
-    identityCard.Parent = ProfilePanel
-    panelCorner(identityCard, 11)
-    panelStroke(identityCard, PANEL_BORDER)
-
-    local profileAvatarHolder = Instance.new("Frame")
-    profileAvatarHolder.AnchorPoint = Vector2.new(0, 0.5)
-    profileAvatarHolder.Position = UDim2.new(0, 14, 0.5, 0)
-    profileAvatarHolder.Size = UDim2.fromOffset(70, 70)
-    profileAvatarHolder.BackgroundColor3 = PANEL_BADGE
-    profileAvatarHolder.ZIndex = 152
-    profileAvatarHolder.Parent = identityCard
-    panelCorner(profileAvatarHolder, 99)
-    panelStroke(profileAvatarHolder, PANEL_BORDER)
-
-    local profileAvatar = Instance.new("ImageLabel")
-    profileAvatar.Name = "Avatar"
-    profileAvatar.Image = ""
-    profileAvatar.BackgroundTransparency = 1
-    profileAvatar.Position = UDim2.fromOffset(4, 4)
-    profileAvatar.Size = UDim2.new(1, -8, 1, -8)
-    profileAvatar.ScaleType = Enum.ScaleType.Crop
-    profileAvatar.ZIndex = 153
-    profileAvatar.Parent = profileAvatarHolder
-    panelCorner(profileAvatar, 99)
-
-    local profileOnlineRing = Instance.new("Frame")
-    profileOnlineRing.AnchorPoint = Vector2.new(1, 1)
-    profileOnlineRing.Position = UDim2.new(1, 0, 1, 0)
-    profileOnlineRing.Size = UDim2.fromOffset(16, 16)
-    profileOnlineRing.BackgroundColor3 = PANEL_ELEMENT
-    profileOnlineRing.ZIndex = 154
-    profileOnlineRing.Parent = profileAvatarHolder
-    panelCorner(profileOnlineRing, 99)
-    local profileOnlineDot = Instance.new("Frame")
-    profileOnlineDot.AnchorPoint = Vector2.new(0.5, 0.5)
-    profileOnlineDot.Position = UDim2.fromScale(0.5, 0.5)
-    profileOnlineDot.Size = UDim2.fromOffset(9, 9)
-    profileOnlineDot.BackgroundColor3 = PANEL_GREEN
-    profileOnlineDot.ZIndex = 155
-    profileOnlineDot.Parent = profileOnlineRing
-    panelCorner(profileOnlineDot, 99)
-
-    local profileName = Instance.new("TextLabel")
-    profileName.Text = LocalPlayer and LocalPlayer.DisplayName or "Player"
-    profileName.Font = Enum.Font.GothamBold
-    profileName.TextSize = 15
-    profileName.TextColor3 = PANEL_WHITE
-    profileName.TextXAlignment = Enum.TextXAlignment.Left
-    profileName.TextTruncate = Enum.TextTruncate.AtEnd
-    profileName.BackgroundTransparency = 1
-    profileName.Position = UDim2.fromOffset(98, 16)
-    profileName.Size = UDim2.new(1, -112, 0, 20)
-    profileName.ZIndex = 152
-    profileName.Parent = identityCard
-
-    local profileHandle = Instance.new("TextLabel")
-    profileHandle.Text = LocalPlayer and ("@" .. LocalPlayer.Name) or "@unknown"
-    profileHandle.Font = Enum.Font.GothamMedium
-    profileHandle.TextSize = 11
-    profileHandle.TextColor3 = PANEL_TEXT_DIM
-    profileHandle.TextXAlignment = Enum.TextXAlignment.Left
-    profileHandle.TextTruncate = Enum.TextTruncate.AtEnd
-    profileHandle.BackgroundTransparency = 1
-    profileHandle.Position = UDim2.fromOffset(98, 38)
-    profileHandle.Size = UDim2.new(1, -112, 0, 16)
-    profileHandle.ZIndex = 152
-    profileHandle.Parent = identityCard
-
-    local profileConnectedBadge = Instance.new("Frame")
-    profileConnectedBadge.Position = UDim2.fromOffset(98, 60)
-    profileConnectedBadge.Size = UDim2.fromOffset(88, 22)
-    profileConnectedBadge.BackgroundColor3 = PANEL_BADGE_IDLE
-    profileConnectedBadge.ZIndex = 152
-    profileConnectedBadge.Parent = identityCard
-    panelCorner(profileConnectedBadge, 7)
-    local profileConnectedDot = Instance.new("Frame")
-    profileConnectedDot.AnchorPoint = Vector2.new(0, 0.5)
-    profileConnectedDot.Position = UDim2.new(0, 8, 0.5, 0)
-    profileConnectedDot.Size = UDim2.fromOffset(6, 6)
-    profileConnectedDot.BackgroundColor3 = PANEL_GREEN
-    profileConnectedDot.ZIndex = 153
-    profileConnectedDot.Parent = profileConnectedBadge
-    panelCorner(profileConnectedDot, 99)
-    local profileConnectedText = Instance.new("TextLabel")
-    profileConnectedText.Text = "CONNECTED"
-    profileConnectedText.Font = Enum.Font.GothamBold
-    profileConnectedText.TextSize = 8
-    profileConnectedText.TextColor3 = PANEL_TEXT_GRAY
-    profileConnectedText.TextXAlignment = Enum.TextXAlignment.Left
-    profileConnectedText.BackgroundTransparency = 1
-    profileConnectedText.Position = UDim2.fromOffset(20, 0)
-    profileConnectedText.Size = UDim2.new(1, -25, 1, 0)
-    profileConnectedText.ZIndex = 153
-    profileConnectedText.Parent = profileConnectedBadge
-
-    local detailsTitle = Instance.new("TextLabel")
-    detailsTitle.Text = "ACCOUNT DETAILS"
-    detailsTitle.Font = Enum.Font.GothamBold
-    detailsTitle.TextSize = 10
-    detailsTitle.TextColor3 = PANEL_TEXT_DIM
-    detailsTitle.TextXAlignment = Enum.TextXAlignment.Left
-    detailsTitle.BackgroundTransparency = 1
-    detailsTitle.Position = UDim2.fromOffset(18, 192)
-    detailsTitle.Size = UDim2.new(1, -36, 0, 14)
-    detailsTitle.ZIndex = 152
-    detailsTitle.Parent = ProfilePanel
-
-    local detailsCard = Instance.new("Frame")
-    detailsCard.Position = UDim2.fromOffset(16, 210)
-    detailsCard.Size = UDim2.new(1, -32, 0, 102)
-    detailsCard.BackgroundColor3 = PANEL_ELEMENT
-    detailsCard.ZIndex = 151
-    detailsCard.Parent = ProfilePanel
-    panelCorner(detailsCard, 11)
-    panelStroke(detailsCard, PANEL_BORDER)
-
-    local profilePingLabel
-    local function addProfileDetail(index, labelText, valueText)
-        local y = (index - 1) * 34
-        local row = Instance.new("Frame")
-        row.Position = UDim2.fromOffset(0, y)
-        row.Size = UDim2.new(1, 0, 0, 34)
-        row.BackgroundTransparency = 1
-        row.ZIndex = 152
-        row.Parent = detailsCard
-        local label = Instance.new("TextLabel")
-        label.Text = labelText
-        label.Font = Enum.Font.GothamMedium
-        label.TextSize = 10
-        label.TextColor3 = PANEL_TEXT_DIM
-        label.TextXAlignment = Enum.TextXAlignment.Left
-        label.BackgroundTransparency = 1
-        label.Position = UDim2.fromOffset(14, 0)
-        label.Size = UDim2.new(0.46, -14, 1, 0)
-        label.ZIndex = 153
-        label.Parent = row
-        local value = Instance.new("TextLabel")
-        value.Text = valueText
-        value.Font = Enum.Font.GothamMedium
-        value.TextSize = 11
-        value.TextColor3 = PANEL_WHITE
-        value.TextXAlignment = Enum.TextXAlignment.Right
-        value.TextTruncate = Enum.TextTruncate.AtEnd
-        value.BackgroundTransparency = 1
-        value.Position = UDim2.new(0.46, 0, 0, 0)
-        value.Size = UDim2.new(0.54, -14, 1, 0)
-        value.ZIndex = 153
-        value.Parent = row
-        if index < 3 then
-            local sep = Instance.new("Frame")
-            sep.Position = UDim2.new(0, 14, 1, -1)
-            sep.Size = UDim2.new(1, -28, 0, 1)
-            sep.BackgroundColor3 = PANEL_BORDER
-            sep.ZIndex = 153
-            sep.Parent = row
-        end
-        return value
-    end
-    addProfileDetail(1, "USER ID",     LocalPlayer and tostring(LocalPlayer.UserId) or "N/A")
-    addProfileDetail(2, "ACCOUNT AGE", LocalPlayer and (tostring(LocalPlayer.AccountAge) .. " days") or "N/A")
-    profilePingLabel = addProfileDetail(3, "PING", "-- ms")
-
-    -- ── Live performance panel ──────────────────────────────────────────
-    local perfWidth     = math.max(236, tonumber(GuiConfig.PerformanceWidth) or 260)
-    local perfHeight    = math.max(250, tonumber(GuiConfig.PerformanceHeight) or 262)
-    local panelGap      = math.max(8, tonumber(GuiConfig.ProfilePanelGap) or 12)
-    local perfOpenPos   = UDim2.new(1, -(18 + profileWidth + panelGap), 1, -bottomMargin)
-    local perfClosedPos = UDim2.new(1, perfWidth + 36, 1, -bottomMargin)
-
-    local PerfPanel = Instance.new("CanvasGroup")
-    PerfPanel.Name = "LivePerformance"
-    PerfPanel.AnchorPoint = Vector2.new(1, 1)
-    PerfPanel.Position = perfClosedPos
-    PerfPanel.Size = UDim2.fromOffset(perfWidth, perfHeight)
-    PerfPanel.BackgroundColor3 = PANEL_CARD
-    PerfPanel.GroupTransparency = 1
-    PerfPanel.ClipsDescendants = true
-    PerfPanel.ZIndex = 149
-    PerfPanel.Parent = OxideOnTop
-    panelCorner(PerfPanel, 14)
-
-    local perfHeader = Instance.new("Frame")
-    perfHeader.Size = UDim2.new(1, 0, 0, 52)
-    perfHeader.BackgroundTransparency = 1
-    perfHeader.ZIndex = 150
-    perfHeader.Parent = PerfPanel
-    local perfTitle = Instance.new("TextLabel")
-    perfTitle.Text = tostring(GuiConfig.PerformanceTitle or "LIVE PERFORMANCE")
-    perfTitle.Font = Enum.Font.GothamBold
-    perfTitle.TextSize = 12
-    perfTitle.TextColor3 = PANEL_WHITE
-    perfTitle.TextXAlignment = Enum.TextXAlignment.Left
-    perfTitle.BackgroundTransparency = 1
-    perfTitle.Position = UDim2.fromOffset(16, 10)
-    perfTitle.Size = UDim2.new(1, -94, 0, 17)
-    perfTitle.ZIndex = 151
-    perfTitle.Parent = perfHeader
-    local perfSub = Instance.new("TextLabel")
-    perfSub.Text = "Real-time frame tracker"
-    perfSub.Font = Enum.Font.Gotham
-    perfSub.TextSize = 9
-    perfSub.TextColor3 = PANEL_TEXT_DIM
-    perfSub.TextXAlignment = Enum.TextXAlignment.Left
-    perfSub.BackgroundTransparency = 1
-    perfSub.Position = UDim2.fromOffset(16, 29)
-    perfSub.Size = UDim2.new(1, -94, 0, 13)
-    perfSub.ZIndex = 151
-    perfSub.Parent = perfHeader
-    local perfLiveBadge = Instance.new("Frame")
-    perfLiveBadge.AnchorPoint = Vector2.new(1, 0)
-    perfLiveBadge.Position = UDim2.new(1, -12, 0, 13)
-    perfLiveBadge.Size = UDim2.fromOffset(56, 18)
-    perfLiveBadge.BackgroundColor3 = PANEL_BADGE_IDLE
-    perfLiveBadge.ZIndex = 151
-    perfLiveBadge.Parent = perfHeader
-    panelCorner(perfLiveBadge, 6)
-    local perfLiveDot = Instance.new("Frame")
-    perfLiveDot.AnchorPoint = Vector2.new(0, 0.5)
-    perfLiveDot.Position = UDim2.new(0, 8, 0.5, 0)
-    perfLiveDot.Size = UDim2.fromOffset(5, 5)
-    perfLiveDot.BackgroundColor3 = PANEL_GREEN
-    perfLiveDot.ZIndex = 152
-    perfLiveDot.Parent = perfLiveBadge
-    panelCorner(perfLiveDot, 99)
-    local perfLiveText = Instance.new("TextLabel")
-    perfLiveText.Text = "LIVE"
-    perfLiveText.Font = Enum.Font.GothamBold
-    perfLiveText.TextSize = 8
-    perfLiveText.TextColor3 = PANEL_TEXT_GRAY
-    perfLiveText.TextXAlignment = Enum.TextXAlignment.Left
-    perfLiveText.BackgroundTransparency = 1
-    perfLiveText.Position = UDim2.fromOffset(19, 0)
-    perfLiveText.Size = UDim2.new(1, -23, 1, 0)
-    perfLiveText.ZIndex = 152
-    perfLiveText.Parent = perfLiveBadge
-
-    -- FPS summary card
-    local fpsSummary = Instance.new("Frame")
-    fpsSummary.Position = UDim2.fromOffset(14, 56)
-    fpsSummary.Size = UDim2.new(1, -28, 0, 52)
-    fpsSummary.BackgroundColor3 = PANEL_ELEMENT
-    fpsSummary.ZIndex = 150
-    fpsSummary.Parent = PerfPanel
-    panelCorner(fpsSummary, 10)
-    panelStroke(fpsSummary, PANEL_BORDER)
-    local fpsSummaryTitle = Instance.new("TextLabel")
-    fpsSummaryTitle.Text = "FPS"
-    fpsSummaryTitle.Font = Enum.Font.GothamBold
-    fpsSummaryTitle.TextSize = 8
-    fpsSummaryTitle.TextColor3 = PANEL_TEXT_DIM
-    fpsSummaryTitle.TextXAlignment = Enum.TextXAlignment.Left
-    fpsSummaryTitle.BackgroundTransparency = 1
-    fpsSummaryTitle.Position = UDim2.fromOffset(12, 6)
-    fpsSummaryTitle.Size = UDim2.new(0.5, -12, 0, 11)
-    fpsSummaryTitle.ZIndex = 151
-    fpsSummaryTitle.Parent = fpsSummary
-    local currentFpsLabel = Instance.new("TextLabel")
-    currentFpsLabel.Text = "--"
-    currentFpsLabel.Font = Enum.Font.GothamBold
-    currentFpsLabel.TextSize = 21
-    currentFpsLabel.TextColor3 = PANEL_WHITE
-    currentFpsLabel.TextXAlignment = Enum.TextXAlignment.Left
-    currentFpsLabel.BackgroundTransparency = 1
-    currentFpsLabel.Position = UDim2.fromOffset(12, 18)
-    currentFpsLabel.Size = UDim2.new(0.5, -12, 0, 26)
-    currentFpsLabel.ZIndex = 151
-    currentFpsLabel.Parent = fpsSummary
-    local frameTimeTitle = Instance.new("TextLabel")
-    frameTimeTitle.Text = "FRAME TIME"
-    frameTimeTitle.Font = Enum.Font.GothamBold
-    frameTimeTitle.TextSize = 8
-    frameTimeTitle.TextColor3 = PANEL_TEXT_DIM
-    frameTimeTitle.TextXAlignment = Enum.TextXAlignment.Right
-    frameTimeTitle.BackgroundTransparency = 1
-    frameTimeTitle.Position = UDim2.new(0.5, 0, 0, 7)
-    frameTimeTitle.Size = UDim2.new(0.5, -12, 0, 11)
-    frameTimeTitle.ZIndex = 151
-    frameTimeTitle.Parent = fpsSummary
-    local frameTimeLabel = Instance.new("TextLabel")
-    frameTimeLabel.Text = "-- ms"
-    frameTimeLabel.Font = Enum.Font.GothamMedium
-    frameTimeLabel.TextSize = 11
-    frameTimeLabel.TextColor3 = PANEL_WHITE
-    frameTimeLabel.TextXAlignment = Enum.TextXAlignment.Right
-    frameTimeLabel.BackgroundTransparency = 1
-    frameTimeLabel.Position = UDim2.new(0.5, 0, 0, 22)
-    frameTimeLabel.Size = UDim2.new(0.5, -12, 0, 16)
-    frameTimeLabel.ZIndex = 151
-    frameTimeLabel.Parent = fpsSummary
-
-    -- Frame history graph
-    local graphTitle = Instance.new("TextLabel")
-    graphTitle.Text = "FRAME HISTORY"
-    graphTitle.Font = Enum.Font.GothamBold
-    graphTitle.TextSize = 9
-    graphTitle.TextColor3 = PANEL_TEXT_DIM
-    graphTitle.TextXAlignment = Enum.TextXAlignment.Left
-    graphTitle.BackgroundTransparency = 1
-    graphTitle.Position = UDim2.fromOffset(16, 118)
-    graphTitle.Size = UDim2.new(1, -32, 0, 13)
-    graphTitle.ZIndex = 150
-    graphTitle.Parent = PerfPanel
-
-    local graphCard = Instance.new("Frame")
-    graphCard.Position = UDim2.fromOffset(14, 136)
-    graphCard.Size = UDim2.new(1, -28, 0, 68)
-    graphCard.BackgroundColor3 = PANEL_ELEMENT
-    graphCard.ClipsDescendants = true
-    graphCard.ZIndex = 150
-    graphCard.Parent = PerfPanel
-    panelCorner(graphCard, 10)
-    panelStroke(graphCard, PANEL_BORDER)
-    local graphPlot = Instance.new("Frame")
-    graphPlot.Position = UDim2.fromOffset(10, 7)
-    graphPlot.Size = UDim2.new(1, -20, 1, -14)
-    graphPlot.BackgroundTransparency = 1
-    graphPlot.ClipsDescendants = true
-    graphPlot.ZIndex = 151
-    graphPlot.Parent = graphCard
-
-    local maxFpsSamples = 48
-    local fpsSamples = {}
-    local graphSegments = {}
-    for i = 1, maxFpsSamples - 1 do
-        local seg = Instance.new("Frame")
-        seg.Name = "FL" .. i
-        seg.AnchorPoint = Vector2.new(0, 0.5)
-        seg.Size = UDim2.fromOffset(0, 1)
-        seg.BackgroundColor3 = PANEL_ACC
-        seg.BorderSizePixel = 0
-        seg.Visible = false
-        seg.ZIndex = 153
-        seg.Parent = graphPlot
-        graphSegments[i] = seg
-    end
-
-    -- AVG / LOW / HIGH strip
-    local statsStrip = Instance.new("Frame")
-    statsStrip.Position = UDim2.fromOffset(14, 214)
-    statsStrip.Size = UDim2.new(1, -28, 0, 34)
-    statsStrip.BackgroundColor3 = PANEL_ELEMENT
-    statsStrip.ZIndex = 150
-    statsStrip.Parent = PerfPanel
-    panelCorner(statsStrip, 10)
-    panelStroke(statsStrip, PANEL_BORDER)
-    local statValueLabels = {}
-    for i, sn in ipairs({ "AVG", "LOW", "HIGH" }) do
-        local sc = Instance.new("Frame")
-        sc.Position = UDim2.new((i - 1) / 3, 0, 0, 0)
-        sc.Size = UDim2.new(1 / 3, 0, 1, 0)
-        sc.BackgroundTransparency = 1
-        sc.ZIndex = 151
-        sc.Parent = statsStrip
-        local snLabel = Instance.new("TextLabel")
-        snLabel.Text = sn
-        snLabel.Font = Enum.Font.GothamBold
-        snLabel.TextSize = 8
-        snLabel.TextColor3 = PANEL_TEXT_DIM
-        snLabel.TextXAlignment = Enum.TextXAlignment.Center
-        snLabel.BackgroundTransparency = 1
-        snLabel.Position = UDim2.fromOffset(0, 4)
-        snLabel.Size = UDim2.new(1, 0, 0, 10)
-        snLabel.ZIndex = 152
-        snLabel.Parent = sc
-        statValueLabels[i] = Instance.new("TextLabel")
-        statValueLabels[i].Text = "--"
-        statValueLabels[i].Font = Enum.Font.GothamMedium
-        statValueLabels[i].TextSize = 10
-        statValueLabels[i].TextColor3 = PANEL_WHITE
-        statValueLabels[i].TextXAlignment = Enum.TextXAlignment.Center
-        statValueLabels[i].BackgroundTransparency = 1
-        statValueLabels[i].Position = UDim2.fromOffset(0, 17)
-        statValueLabels[i].Size = UDim2.new(1, 0, 0, 14)
-        statValueLabels[i].ZIndex = 152
-        statValueLabels[i].Parent = sc
-    end
-
-    local function redrawFpsGraph()
-        local sc = #fpsSamples
-        local ps = graphPlot.AbsoluteSize
-        if sc < 2 or ps.X <= 1 or ps.Y <= 1 then
-            for _, s in ipairs(graphSegments) do s.Visible = false end
-            return
-        end
-        local gm = 60
-        for _, v in ipairs(fpsSamples) do gm = math.max(gm, v) end
-        gm = math.max(30, math.ceil(gm / 30) * 30)
-        local den = math.max(sc - 1, 1)
-        local uH = math.max(1, ps.Y - 6)
-        for i, seg in ipairs(graphSegments) do
-            if i < sc then
-                local x1 = ((i - 1) / den) * ps.X
-                local x2 = (i / den) * ps.X
-                local y1 = 3 + (1 - math.clamp(fpsSamples[i] / gm, 0, 1)) * uH
-                local y2 = 3 + (1 - math.clamp(fpsSamples[i + 1] / gm, 0, 1)) * uH
-                local dx = x2 - x1
-                local dy = y2 - y1
-                local len = math.sqrt(dx * dx + dy * dy)
-                seg.Position = UDim2.fromOffset(x1, y1)
-                seg.Size = UDim2.fromOffset(len + 2, 1)
-                seg.Rotation = math.deg(math.atan2(dy, dx))
-                seg.Visible = true
-            else
-                seg.Visible = false
-            end
-        end
-    end
-
-    local function pushFpsSample(fps)
-        fps = math.max(0, fps)
-        table.insert(fpsSamples, fps)
-        if #fpsSamples > maxFpsSamples then table.remove(fpsSamples, 1) end
-        local tot, lo, hi = 0, math.huge, 0
-        for _, v in ipairs(fpsSamples) do
-            tot = tot + v
-            lo = math.min(lo, v)
-            hi = math.max(hi, v)
-        end
-        local avg = #fpsSamples > 0 and tot / #fpsSamples or 0
-        local ft = fps > 0 and (1000 / fps) or 0
-        currentFpsLabel.Text = tostring(math.floor(fps + 0.5))
-        frameTimeLabel.Text = string.format("%.1f ms", ft)
-        statValueLabels[1].Text = tostring(math.floor(avg + 0.5))
-        statValueLabels[2].Text = tostring(math.floor(lo + 0.5))
-        statValueLabels[3].Text = tostring(math.floor(hi + 0.5))
-        redrawFpsGraph()
-    end
-
-    -- Live metrics loops (only tick while a panel is open, like the old UI)
-    local profilePingThread = task.spawn(function()
-        while not isDestroyed do
-            task.wait(1)
-            if profileOpen and profilePingLabel and profilePingLabel.Parent then
-                local txt = "N/A"
-                local ok, val = pcall(function()
-                    return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
-                end)
-                if ok and type(val) == "number" then txt = tostring(math.floor(val + 0.5)) .. " ms" end
-                profilePingLabel.Text = txt
-            end
-        end
-    end)
-    trackCleanup(profilePingThread)
-
-    local perfFrames, perfElapsed = 0, 0
-    local perfConn = RunService.RenderStepped:Connect(function(dt)
-        perfFrames = perfFrames + 1
-        perfElapsed = perfElapsed + dt
-        if perfElapsed >= 0.25 then
-            pushFpsSample(perfFrames / perfElapsed)
-            perfFrames, perfElapsed = 0, 0
-        end
-    end)
-    trackCleanup(perfConn)
-
-    -- Avatar thumbnail
-    if LocalPlayer then
-        task.spawn(function()
-            local ok, img = pcall(function()
-                return game:GetService("Players"):GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
-            end)
-            if ok and profileAvatar and profileAvatar.Parent then
-                profileAvatar.Image = img
-            end
-        end)
-    end
-
-    -- Panel visibility (slides both panels together)
-    local function SetProfileVisible(visible, instant)
-        profileOpen = visible == true
-        local tp = profileOpen and profileOpenPos or profileClosedPos
-        local ep = profileOpen and perfOpenPos or perfClosedPos
-        local tr = profileOpen and 0 or 1
-        if instant then
-            ProfilePanel.Position = tp
-            ProfilePanel.GroupTransparency = tr
-            PerfPanel.Position = ep
-            PerfPanel.GroupTransparency = tr
-        else
-            TweenService:Create(ProfilePanel, PROFILE_TWEEN, { Position = tp, GroupTransparency = tr }):Play()
-            TweenService:Create(PerfPanel, PROFILE_TWEEN, { Position = ep, GroupTransparency = tr }):Play()
-        end
-        return profileOpen
-    end
-
-    ToggleProfilePanels = function()
-        SetProfileVisible(not profileOpen)
-    end
-
-    function GuiFunc:ToggleProfile() return ToggleProfilePanels() end
-    function GuiFunc:SetProfileVisible(visible, instant) return SetProfileVisible(visible, instant) end
-    function GuiFunc:IsProfileOpen() return profileOpen end
-
-    -- Start the Koyeb tag system + live tracking for this window.
-    startTagSystem()
-
     return Tabs
 end
 
@@ -6846,5 +6035,33 @@ end
 
 -- -- Panggil fungsi untuk menambahkan tab config di urutan paling akhir
 -- Tabs:AddConfigTab()
+
+-- Backward compat for old scripts (Library:CreateWindow, SaveConfig, etc.)
+Oxide.CreateWindow = Oxide.Window
+Oxide.SaveConfig = function(name)
+    if name and name ~= "" and type(SaveProfile)=="function" then
+        local ok,err = SaveProfile(tostring(name))
+        return ok, err
+    else
+        SaveConfig()
+        return true
+    end
+end
+Oxide.LoadConfig = function(name)
+    if name and name ~= "" and type(LoadProfile)=="function" then
+        local ok = LoadProfile(tostring(name))
+        return ok
+    else
+        LoadConfigFromFile()
+        pcall(LoadConfigElements)
+        return true
+    end
+end
+Oxide.ListConfigs = function()
+    if type(GetProfileList)=="function" then return GetProfileList() end
+    return {}
+end
+-- Also expose global SaveConfig for old scripts that call Library.SaveConfig directly
+Oxide.SaveConfigFromFile = SaveConfig
 
 return Oxide
