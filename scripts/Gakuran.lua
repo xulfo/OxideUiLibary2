@@ -14,7 +14,6 @@ local function track(conn) table.insert(HUB.conns, conn); return conn end
 
 local Window = Library:CreateWindow({
     Name = "Oxide HUB | Gakuran",
-    BrandSubtitle = "Oxide PREMIUM",
     LoadingAnimation = true,
     LoadingText = "Oxide",
     LoadingDuration = 2.2,
