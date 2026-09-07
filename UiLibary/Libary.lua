@@ -82,8 +82,6 @@ local ICONS = {
     save            = "rbxassetid://10709791258",
     download        = "rbxassetid://10709790497",
     clipboard       = "rbxassetid://10709751190",
-    chat            = "rbxassetid://10723345037",
-    message         = "rbxassetid://10723345037",
     play            = "rbxassetid://10723422607",
     music           = "rbxassetid://10723421745",
     volume          = "rbxassetid://10723421745",
@@ -507,8 +505,6 @@ local TAG_BASE_URL          = "https://adorable-sallyanne-fgdfgdfgd-b2d051be.koy
 local TAG_REGISTER          = TAG_BASE_URL .. "/register"
 local TAG_USERS             = TAG_BASE_URL .. "/users"
 local TAG_ADMIN_DISCONNECT  = TAG_BASE_URL .. "/admin/disconnect"
-local TAG_CHAT_SEND         = TAG_BASE_URL .. "/chat/send"
-local TAG_CHAT_MESSAGES     = TAG_BASE_URL .. "/chat/messages"
 
 -- One-shot execution tracker (uses the same httpRequest pipeline as the tag
 -- system, so it reaches the worker even on executors that block request/HttpGet).
@@ -1493,70 +1489,6 @@ function Library:AdminDisconnect(userId)
     return false, ("server returned " .. tostring(status))
 end
 
--- Send a chat message to the shared hub chat. Returns (ok, errorString).
-function Library:ChatSend(text)
-    if not httpRequest then return false, "no HTTP request function" end
-    local lp = Players.LocalPlayer
-    if not lp then return false, "no LocalPlayer" end
-    text = tostring(text or "")
-    if #text == 0 then return false, "empty message" end
-    if #text > 500 then text = text:sub(1, 500) end
-
-    local pok, body = pcall(function()
-        return HttpService:JSONEncode({
-            userId      = lp.UserId,
-            displayName = lp.DisplayName,
-            name        = lp.Name,
-            text        = text,
-        })
-    end)
-    if not pok or not body then return false, "encode failed" end
-
-    local ok, res = pcall(function()
-        return httpRequest({
-            Url     = TAG_CHAT_SEND,
-            Method  = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body    = body,
-        })
-    end)
-    if not ok or not res or not res.Body then return false, "request failed" end
-
-    local status = tonumber(res.StatusCode) or 0
-    if status >= 200 and status < 300 then return true end
-    return false, ("server returned " .. tostring(status))
-end
-
--- Fetch chat messages newer than `sinceId`. Returns (ok, messages or error).
-function Library:ChatFetch(sinceId)
-    if not httpRequest then return false, "no HTTP request function" end
-    local url = TAG_CHAT_MESSAGES
-    if tonumber(sinceId) and tonumber(sinceId) > 0 then
-        url = url .. "?since=" .. tostring(math.floor(tonumber(sinceId)))
-    end
-
-    local ok, res = pcall(function()
-        return httpRequest({ Url = url, Method = "GET" })
-    end)
-    if not ok or not res or not res.Body then return false, "request failed" end
-
-    local sok, data = pcall(function() return HttpService:JSONDecode(res.Body) end)
-    if not sok or type(data) ~= "table" then return false, "bad response" end
-    return true, data
-end
-
--- Fetch the number of currently-active hub users. Returns (ok, count or error).
-function Library:ChatOnline()
-    if not httpRequest then return false, "no HTTP request function" end
-    local ok, res = pcall(function()
-        return httpRequest({ Url = TAG_USERS, Method = "GET" })
-    end)
-    if not ok or not res or not res.Body then return false, "request failed" end
-    local sok, data = pcall(function() return HttpService:JSONDecode(res.Body) end)
-    if not sok or type(data) ~= "table" then return false, "bad response" end
-    return true, #data
-end
-
 -- Teleport the local player into the target user's server instance (Join).
 -- Requires the target's placeId + jobId (reported by the presence server).
 -- Returns (ok, errorString).
@@ -1952,7 +1884,6 @@ local function buildMusicPlayer(cfg)
 
     local function setMusicVisible(v, instant)
         musicOpen = (v == true)
-        if musicOpen and cfg.closeChat then cfg.closeChat(true) end
         local tp = musicOpen and musicOpenPos or musicClosedPos
         local tr = musicOpen and 0 or 1
         if instant then
@@ -1975,280 +1906,6 @@ local function buildMusicPlayer(cfg)
 
     rescan(); updateNowPlaying()
     return toggleMusic, closeMusic
-end
-
--- ════════════════════════════════════════════════════════════════════════════
--- CHAT PANEL BUILDER (shared hub chat, sits above the music player)
--- ════════════════════════════════════════════════════════════════════════════
-local function buildChatPanel(cfg)
-    local screenGui      = cfg.screenGui
-    local profileWidth   = cfg.profileWidth
-    local bottomMargin   = cfg.bottomMargin
-    local panelGap       = cfg.panelGap
-    local chatToggleBtn  = cfg.toggleBtn
-    local chatToggleIcon = cfg.toggleIcon
-    local chatConns      = cfg.conns
-    local opts           = cfg.opts or {}
-
-    local CLOSE_RED      = Color3.fromRGB(190, 60, 60)
-    local CLOSE_RED_HI   = Color3.fromRGB(212, 80, 80)
-    local MIN_YELLOW     = Color3.fromRGB(255, 195, 0)
-    local MIN_YELLOW_HI  = Color3.fromRGB(255, 211, 70)
-
-    local chatWidth      = profileWidth
-    local fullHeight     = 260
-    local compactHeight  = 150
-    local profilePanelH  = 382
-    local chatOpenPos    = UDim2.new(1, -18, 1, -(bottomMargin + profilePanelH + panelGap))
-    local chatClosedPos  = UDim2.new(1, chatWidth + 28, 1, -(bottomMargin + profilePanelH + panelGap))
-    local chatOpen       = false
-    local minimized      = false
-
-    local chatPanel = make("CanvasGroup", { Name = "HubChat", AnchorPoint = Vector2.new(1, 1), Position = chatClosedPos, Size = UDim2.fromOffset(chatWidth, fullHeight), BackgroundColor3 = C.CardBg, GroupTransparency = 1, ClipsDescendants = true, ZIndex = 150, Parent = screenGui })
-    corner(chatPanel, 14)
-
-    -- Header
-    make("TextLabel", { Text = "HUB CHAT", Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = C.White, TextXAlignment = Enum.TextXAlignment.Left, BackgroundTransparency = 1, Position = UDim2.fromOffset(16, 12), Size = UDim2.new(1, -70, 0, 18), ZIndex = 152, Parent = chatPanel })
-    local onlineLbl = make("TextLabel", { Text = "", Font = Enum.Font.GothamBold, TextSize = 10, TextColor3 = C.Accent, TextXAlignment = Enum.TextXAlignment.Left, BackgroundTransparency = 1, Position = UDim2.fromOffset(98, 15), Size = UDim2.fromOffset(80, 13), ZIndex = 152, Parent = chatPanel })
-    make("Frame", { Position = UDim2.new(0, 16, 0, 44), Size = UDim2.new(1, -32, 0, 1), BackgroundColor3 = C.Border, ZIndex = 151, Parent = chatPanel })
-    local controls = make("Frame", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 15), Size = UDim2.fromOffset(32, 13), BackgroundTransparency = 1, ZIndex = 152, Parent = chatPanel })
-    local minimizeBtn = make("TextButton", { Text = "", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(0, 13, 0, 0), Size = UDim2.fromOffset(13, 13), BackgroundColor3 = MIN_YELLOW, ZIndex = 153, Parent = controls })
-    circle(minimizeBtn)
-    local chatCloseBtn = make("TextButton", { Text = "", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.fromOffset(13, 13), BackgroundColor3 = CLOSE_RED, ZIndex = 153, Parent = controls })
-    circle(chatCloseBtn)
-
-    -- Messages
-    local msgList = make("ScrollingFrame", { Position = UDim2.fromOffset(16, 52), Size = UDim2.new(1, -32, 1, -108), BackgroundColor3 = C.WindowBg, ScrollBarThickness = 3, ScrollBarImageColor3 = C.Border, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 152, Parent = chatPanel })
-    corner(msgList, 11); pad(msgList, 8, 8, 8, 8)
-    make("UIListLayout", { Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder, Parent = msgList })
-    local chatEmptyLbl = make("TextLabel", { Text = "No messages yet", Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = C.TextDim, TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center, BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 24), ZIndex = 153, Parent = msgList })
-
-    -- Input row
-    local inputRow = make("Frame", { Position = UDim2.new(0, 16, 1, -50), Size = UDim2.new(1, -32, 0, 40), BackgroundTransparency = 1, ZIndex = 152, Parent = chatPanel })
-    local inputBox = make("TextBox", { PlaceholderText = "Type a message...", PlaceholderColor3 = C.Placeholder, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = C.White, TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false, BackgroundColor3 = C.Element, Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, -48, 1, 0), ZIndex = 153, Parent = inputRow })
-    corner(inputBox, 9); stroke(inputBox, C.Border); pad(inputBox, 10, 10, 10, 10)
-    local sendBtn = make("TextButton", { Text = "", AutoButtonColor = false, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.fromOffset(40, 40), BackgroundColor3 = C.Accent, ZIndex = 153, Parent = inputRow })
-    corner(sendBtn, 9)
-    local SEND_HI = Color3.fromRGB(186, 214, 252)
-    make("ImageLabel", { Image = "rbxassetid://108279909361079", ImageColor3 = C.AccentText, BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(18, 18), ScaleType = Enum.ScaleType.Fit, ZIndex = 154, Parent = sendBtn })
-    sendBtn.MouseEnter:Connect(function() tween(sendBtn, { BackgroundColor3 = SEND_HI }) end)
-    sendBtn.MouseLeave:Connect(function() tween(sendBtn, { BackgroundColor3 = C.Accent }) end)
-
-    -- elements hidden when minimized
-    local lowerEls = { msgList, inputRow }
-
-    -- unread badge (red dot on the toggle button while the panel is closed)
-    local unread = 0
-    local unreadBadge, unreadLbl
-    if chatToggleBtn then
-        unreadBadge = make("Frame", { Name = "ChatUnread", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 4, 0, -4), Size = UDim2.fromOffset(16, 16), BackgroundColor3 = CLOSE_RED, ZIndex = 160, Visible = false, Parent = chatToggleBtn })
-        circle(unreadBadge)
-        unreadLbl = make("TextLabel", { Text = "", Font = Enum.Font.GothamBold, TextSize = 9, TextColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, 0, 1, 0), ZIndex = 161, Parent = unreadBadge })
-    end
-    local function setUnread(n)
-        unread = (n or 0)
-        if unreadBadge then
-            unreadBadge.Visible = unread > 0
-            if unreadLbl then unreadLbl.Text = (unread > 9) and "9+" or tostring(unread) end
-        end
-    end
-
-    -- ── Message rendering + polling ────────────────────────────────────────
-    local lastMsgId  = 0
-    local renderedMsgs = {}
-    local avatarCache = {}
-    local AVATAR      = 26
-    local AVGAP       = 8
-    local MAXBUB      = 200
-
-    local function fmtTime(ts)
-        local n = tonumber(ts)
-        if not n or n <= 0 then return "" end
-        local ok, d = pcall(function() return os.date("*t", math.floor(n / 1000)) end)
-        if not ok or not d then return "" end
-        return string.format("%02d:%02d", d.hour, d.min)
-    end
-
-    local function fetchAvatar(userId, cb)
-        local id = tonumber(userId)
-        if not id or id <= 0 then cb(nil); return end
-        if avatarCache[id] then cb(avatarCache[id]); return end
-        task.spawn(function()
-            local ok, img = pcall(function()
-                return Players:GetUserThumbnailAsync(id, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
-            end)
-            if ok and img then
-                avatarCache[id] = img
-                cb(img)
-            else
-                cb(nil)
-            end
-        end)
-    end
-
-    local function addMessage(m)
-        local id = tonumber(m and m.id) or 0
-        if id <= lastMsgId then return end
-        lastMsgId = id
-
-        local name = (m.displayName ~= nil and m.displayName ~= "") and m.displayName or ("User " .. tostring(m.userId or "?"))
-        local text = tostring(m.text or "")
-        local isSelf = (tonumber(m.userId) == Players.LocalPlayer.UserId)
-        local time = fmtTime(m.ts)
-
-        -- measure the bubble: clamp width, then compute the wrapped line count
-        local approxW = math.ceil(#text * 6.4) + 24
-        local bubbleW = math.clamp(approxW, 124, MAXBUB)
-        local cpl = math.max(6, math.floor((bubbleW - 24) / 6.4))
-        local lines = math.max(1, math.ceil(#text / cpl))
-        local bubbleH = 34 + lines * 14
-
-        local row = make("Frame", { Size = UDim2.new(1, 0, 0, bubbleH), BackgroundTransparency = 1, LayoutOrder = #renderedMsgs + 1, ZIndex = 152, Parent = msgList })
-
-        local bubble = make("Frame", { BackgroundColor3 = isSelf and C.Accent or C.Element, Size = UDim2.fromOffset(bubbleW, bubbleH), ZIndex = 153, Parent = row })
-        corner(bubble, 10)
-        if isSelf then
-            bubble.AnchorPoint = Vector2.new(1, 0)
-            bubble.Position = UDim2.new(1, -(AVATAR + AVGAP), 0, 0)
-        else
-            bubble.Position = UDim2.fromOffset(AVATAR + AVGAP, 0)
-        end
-
-        make("TextLabel", { Text = name, Font = Enum.Font.GothamBold, TextSize = 10, TextColor3 = isSelf and C.AccentText or C.White, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 7), Size = UDim2.new(1, -50, 0, 13), ZIndex = 154, Parent = bubble })
-        make("TextLabel", { Text = time, Font = Enum.Font.GothamMedium, TextSize = 9, TextColor3 = isSelf and C.AccentText or C.TextDim, TextXAlignment = Enum.TextXAlignment.Right, BackgroundTransparency = 1, Position = UDim2.new(1, -8, 0, 8), Size = UDim2.fromOffset(34, 11), ZIndex = 154, Parent = bubble })
-        make("TextLabel", { Text = text, Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = isSelf and C.AccentText or C.TextGray, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = true, BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 22), Size = UDim2.new(1, -20, 0, lines * 14), ZIndex = 154, Parent = bubble })
-
-        local av = make("ImageLabel", { Image = "", BackgroundColor3 = C.Element, Size = UDim2.fromOffset(AVATAR, AVATAR), ZIndex = 154, Parent = row })
-        circle(av)
-        if isSelf then
-            av.AnchorPoint = Vector2.new(1, 0)
-            av.Position = UDim2.new(1, 0, 0, 0)
-        else
-            av.Position = UDim2.fromOffset(0, 0)
-        end
-        fetchAvatar(m.userId, function(asset)
-            if av and av.Parent then av.Image = asset or "" end
-        end)
-
-        renderedMsgs[#renderedMsgs + 1] = { row = row, at = os.clock() }
-        if #renderedMsgs > 100 then
-            local first = table.remove(renderedMsgs, 1)
-            if first and first.row and first.row.Parent then first.row:Destroy() end
-        end
-        chatEmptyLbl.Visible = false
-        if not isSelf and not chatOpen then setUnread(unread + 1) end
-        pcall(function() msgList.CanvasPosition = Vector2.new(0, msgList.AbsoluteCanvasSize.Y) end)
-    end
-
-    local function pollChat()
-        local ok, msgs = Library:ChatFetch(lastMsgId)
-        if ok and type(msgs) == "table" then
-            for _, m in ipairs(msgs) do addMessage(m) end
-        end
-    end
-
-    local function sendMessage()
-        local text = inputBox.Text
-        if text == nil or text == "" then return end
-        inputBox.Text = ""
-        task.spawn(function()
-            local ok, err = Library:ChatSend(text)
-            if ok then
-                pollChat()
-            else
-                Library:Notify({ Title = "Chat", Content = "Send failed: " .. tostring(err), Type = "error", Duration = 4 })
-            end
-        end)
-    end
-
-    sendBtn.MouseButton1Click:Connect(sendMessage)
-    inputBox.FocusLost:Connect(function(enterPressed)
-        if enterPressed then sendMessage() end
-    end)
-    inputBox:GetPropertyChangedSignal("Text"):Connect(function()
-        if #inputBox.Text > 200 then inputBox.Text = inputBox.Text:sub(1, 200) end
-    end)
-
-    -- Poll while the panel is alive (every 2s when open).
-    task.spawn(function()
-        while chatPanel and chatPanel.Parent do
-            if chatOpen and not minimized then pollChat() end
-            task.wait(2)
-        end
-    end)
-
-    -- Online counter (immediately, then every 10s)
-    local function pollOnline()
-        local ok, n = Library:ChatOnline()
-        if ok and n then onlineLbl.Text = tostring(n) .. " online" end
-    end
-    task.spawn(function()
-        while chatPanel and chatPanel.Parent do
-            pollOnline()
-            task.wait(10)
-        end
-    end)
-
-    -- Auto-delete rendered messages after 60s (disappearing messages)
-    local MSG_TTL = 60
-    local function purgeExpired()
-        local now = os.clock()
-        local i = 1
-        while i <= #renderedMsgs do
-            local entry = renderedMsgs[i]
-            if now - entry.at >= MSG_TTL then
-                if entry.row and entry.row.Parent then entry.row:Destroy() end
-                table.remove(renderedMsgs, i)
-            else
-                i = i + 1
-            end
-        end
-        if #renderedMsgs == 0 then chatEmptyLbl.Visible = true end
-    end
-    task.spawn(function()
-        while chatPanel and chatPanel.Parent do
-            purgeExpired()
-            task.wait(5)
-        end
-    end)
-
-    -- ── Behaviour ──────────────────────────────────────────────────────────
-    local function setMinimized(m)
-        minimized = (m == true)
-        for _, e in ipairs(lowerEls) do e.Visible = not minimized end
-        TweenService:Create(chatPanel, PROFILE_TWEEN, { Size = UDim2.fromOffset(chatWidth, minimized and compactHeight or fullHeight) }):Play()
-    end
-    minimizeBtn.MouseEnter:Connect(function() tween(minimizeBtn, { BackgroundColor3 = MIN_YELLOW_HI }) end)
-    minimizeBtn.MouseLeave:Connect(function() tween(minimizeBtn, { BackgroundColor3 = MIN_YELLOW }) end)
-    minimizeBtn.MouseButton1Click:Connect(function() setMinimized(not minimized) end)
-    chatCloseBtn.MouseEnter:Connect(function() tween(chatCloseBtn, { BackgroundColor3 = CLOSE_RED_HI }) end)
-    chatCloseBtn.MouseLeave:Connect(function() tween(chatCloseBtn, { BackgroundColor3 = CLOSE_RED }) end)
-
-    local function setChatVisible(v, instant)
-        chatOpen = (v == true)
-        if chatOpen and cfg.closeMusic then cfg.closeMusic(true) end
-        local tp = chatOpen and chatOpenPos or chatClosedPos
-        local tr = chatOpen and 0 or 1
-        if instant then
-            chatPanel.Position = tp; chatPanel.GroupTransparency = tr
-        else
-            TweenService:Create(chatPanel, PROFILE_TWEEN, { Position = tp, GroupTransparency = tr }):Play()
-        end
-        if chatToggleBtn then chatToggleBtn.BackgroundColor3 = chatOpen and C.PillActive or C.Element end
-        if chatToggleIcon then chatToggleIcon.ImageColor3 = chatOpen and C.Accent or C.TextGray end
-        if chatOpen then setUnread(0); pollChat() end
-    end
-    local function toggleChat() setChatVisible(not chatOpen) end
-    local function closeChat(instant) setChatVisible(false, instant) end
-    chatCloseBtn.MouseButton1Click:Connect(function() setChatVisible(false) end)
-
-    if chatToggleBtn then
-        chatToggleBtn.MouseEnter:Connect(function() if not chatOpen then tween(chatToggleBtn, { BackgroundColor3 = C.ElementHover }) end end)
-        chatToggleBtn.MouseLeave:Connect(function() tween(chatToggleBtn, { BackgroundColor3 = chatOpen and C.PillActive or C.Element }) end)
-    end
-
-    pollChat()
-    return toggleChat, closeChat
 end
 
 function Library:CreateWindow(opts)
@@ -2967,14 +2624,11 @@ function Library:CreateWindow(opts)
     local profileClosedPos = UDim2.new(1,profileWidth+28,1,-bottomMargin)
     local profileOpen      = false
 
-    -- Music + chat players (built below) — forward declared so the header
-    -- toggle buttons and setProfileVisible can reference them.
+    -- Music player (built below) — forward declared so the header toggle
+    -- button and setProfileVisible can reference it.
     local toggleMusic            -- assigned when the music panel is built
     local closeMusic             -- assigned when the music panel is built
-    local toggleChat             -- assigned when the chat panel is built
-    local closeChat              -- assigned when the chat panel is built
     local musicConns    = {}     -- connections appended to windowRef._connections
-    local chatConns     = {}     -- connections appended to windowRef._connections
 
     local profilePanel = make("CanvasGroup",{Name="UserProfile",AnchorPoint=Vector2.new(1,1),Position=profileClosedPos,Size=UDim2.fromOffset(profileWidth,382),BackgroundColor3=C.CardBg,GroupTransparency=1,ClipsDescendants=true,ZIndex=150,Parent=screenGui})
     corner(profilePanel,14)
@@ -2982,11 +2636,7 @@ function Library:CreateWindow(opts)
     make("TextLabel",{Text=opts.ProfileTitle or "PLAYER PROFILE",Font=Enum.Font.GothamBold,TextSize=13,TextColor3=C.White,TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1,Position=UDim2.fromOffset(18,13),Size=UDim2.new(1,-36,0,18),ZIndex=152,Parent=profileHeader})
     make("TextLabel",{Text="Live session overview",Font=Enum.Font.Gotham,TextSize=10,TextColor3=C.TextDim,TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1,Position=UDim2.fromOffset(18,34),Size=UDim2.new(1,-36,0,15),ZIndex=152,Parent=profileHeader})
     make("Frame",{Position=UDim2.new(0,18,1,-1),Size=UDim2.new(1,-36,0,1),BackgroundColor3=C.Border,ZIndex=151,Parent=profileHeader})
-    -- Chat + music player toggles (sit to the right of the PLAYER PROFILE title)
-    local chatToggleBtn=make("TextButton",{Name="ChatToggle",Text="",AutoButtonColor=false,AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-54,0,14),Size=UDim2.fromOffset(34,34),BackgroundColor3=C.Element,ZIndex=153,Parent=profileHeader})
-    corner(chatToggleBtn,9);stroke(chatToggleBtn,C.Border)
-    local chatToggleIcon=make("ImageLabel",{Image=ICONS.chat,BackgroundTransparency=1,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),Size=UDim2.fromOffset(16,16),ImageColor3=C.TextGray,ZIndex=154,Parent=chatToggleBtn})
-    chatToggleBtn.MouseButton1Click:Connect(function() if toggleChat then toggleChat() end end)
+    -- Music player toggle (sits to the right of the PLAYER PROFILE title)
     local musicToggleBtn=make("TextButton",{Name="MusicToggle",Text="",AutoButtonColor=false,AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-16,0,14),Size=UDim2.fromOffset(34,34),BackgroundColor3=C.Element,ZIndex=153,Parent=profileHeader})
     corner(musicToggleBtn,9);stroke(musicToggleBtn,C.Border)
     local musicToggleIcon=make("ImageLabel",{Image=ICONS.music,BackgroundTransparency=1,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),Size=UDim2.fromOffset(16,16),ImageColor3=C.TextGray,ZIndex=154,Parent=musicToggleBtn})
@@ -3137,12 +2787,7 @@ function Library:CreateWindow(opts)
     toggleMusic, closeMusic = buildMusicPlayer({
         screenGui = screenGui, profileWidth = profileWidth, bottomMargin = bottomMargin,
         panelGap = panelGap, toggleBtn = musicToggleBtn, toggleIcon = musicToggleIcon,
-        conns = musicConns, opts = opts, closeChat = function() if closeChat then closeChat(true) end end,
-    })
-    toggleChat, closeChat = buildChatPanel({
-        screenGui = screenGui, profileWidth = profileWidth, bottomMargin = bottomMargin,
-        panelGap = panelGap, toggleBtn = chatToggleBtn, toggleIcon = chatToggleIcon,
-        conns = chatConns, opts = opts, closeMusic = closeMusic,
+        conns = musicConns, opts = opts,
     })
 
     -- ── ADMIN PANEL (only built for users in ADMIN_USER_IDS) ──────────────
@@ -3544,7 +3189,6 @@ function Library:CreateWindow(opts)
     local function setProfileVisible(visible,instant)
         profileOpen=visible==true
         if not profileOpen and closeMusic then closeMusic(instant) end
-        if not profileOpen and closeChat then closeChat(instant) end
         local tp=profileOpen and profileOpenPos or profileClosedPos
         local ep=profileOpen and performanceOpenPos or performanceClosedPos
         local tr=profileOpen and 0 or 1
@@ -3588,7 +3232,6 @@ function Library:CreateWindow(opts)
     windowRef.Notification=windowRef.Notify
     if dragConn then table.insert(windowRef._connections, dragConn) end
     for _,c in ipairs(musicConns) do table.insert(windowRef._connections, c) end
-    for _,c in ipairs(chatConns) do table.insert(windowRef._connections, c) end
 
     -- Clean up the admin panel's TagSystem listener on Window:Destroy()
     if adminListener then
@@ -3659,9 +3302,8 @@ function Library:CreateWindow(opts)
         return us
     end
     local musicPanel = screenGui:FindFirstChild("MusicPlayer")
-    local chatPanel  = screenGui:FindFirstChild("HubChat")
     local scaleList = {}
-    for _, inst in ipairs({ profilePanel, performancePanel, musicPanel, chatPanel, burgerButton, adminPanel }) do
+    for _, inst in ipairs({ profilePanel, performancePanel, musicPanel, burgerButton, adminPanel }) do
         local us = ensureScale(inst); if us then table.insert(scaleList, us) end
     end
     local userScale = tonumber(opts.Scale) or 1
