@@ -506,20 +506,6 @@ local TAG_REGISTER          = TAG_BASE_URL .. "/register"
 local TAG_USERS             = TAG_BASE_URL .. "/users"
 local TAG_ADMIN_DISCONNECT  = TAG_BASE_URL .. "/admin/disconnect"
 
--- One-shot execution tracker (uses the same httpRequest pipeline as the tag
--- system, so it reaches the worker even on executors that block request/HttpGet).
-local TRACK_LAUNCH_URL = "https://premium-keys.oxide-premium.workers.dev/track"
-local _launchTracked   = false
-
--- Pretty game names mirrored from the worker's GAMES list.
-local GAME_TRACK_NAMES = {
-    [83038462357724]  = "Graben und reinigen",
-    [94640181989498]  = "Grow a Chicken Fighter",
-    [107778070777162] = "Steal an Egg",
-    [100068273119174] = "Leaf Simulator",
-    [128736949265057] = "Gakuran",
-}
-
 -- UserIds with access to the admin panel. The server has its own copy of
 -- this list — the client-side check just decides whether the panel UI is
 -- built. The server still validates every /admin/* request.
@@ -1024,29 +1010,6 @@ local function tagRegister()
         })
     end)
     if not ok or not res or not res.Body then return end
-
-    -- One-shot: report this execution to the worker's launch counter.
-    -- Uses the same httpRequest pipeline so it works on every executor.
-    if not _launchTracked and httpRequest then
-        _launchTracked = true
-        local tname = GAME_TRACK_NAMES[game.PlaceId] or "Unsupported"
-        local tid   = tostring(game.PlaceId)
-        local eid   = getExecutorName()
-        local uid   = tostring(lp.UserId or "")
-        local function escapeQuery(value)
-            value = tostring(value or "")
-            value = string.gsub(value, "%%", "%%25")
-            value = string.gsub(value, " ", "%%20")
-            value = string.gsub(value, "&", "%%26")
-            value = string.gsub(value, "?", "%%3F")
-            return value
-        end
-        local tu = TRACK_LAUNCH_URL .. "?kind=launch&game=" .. escapeQuery(tname)
-            .. "&place_id=" .. tid .. "&user_id=" .. uid .. "&executor=" .. escapeQuery(eid)
-        pcall(function()
-            httpRequest({ Url = tu, Method = "GET" })
-        end)
-    end
 
     -- If the server has queued this user for an admin kick, comply.
     local sok, data = pcall(function() return HttpService:JSONDecode(res.Body) end)
