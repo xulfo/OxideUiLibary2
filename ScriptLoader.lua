@@ -2,6 +2,15 @@
 -- OXIDE HUB — Universal ScriptLoader (free)
 -- Checks game.PlaceId → loads library ONCE → downloads & runs the right script.
 -- Fully open source: everything is plain Lua on GitHub, no encryption.
+--
+-- FAST + STALE-PROOF:
+--  * Downloads are cached for 5 minutes per session, so re-running the script
+--    is instant instead of re-downloading ~250 KB every time.
+--  * GitHub's raw CDN can briefly serve an old copy right after an upload.
+--    Every library download is verified against a marker ("ChatFree", present
+--    only in the current build) and a stale copy is re-fetched with a fresh
+--    cache-buster until the current build arrives — a stale library is NEVER
+--    executed, so the old chat-era hub can never come back.
 -- ══════════════════════════════════════════════════════════════════════════════
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -29,6 +38,27 @@ local GAME_NAMES = {
 }
 
 -- Always use the stable public library.
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- CACHE + STALE-PROTECTION
+-- ══════════════════════════════════════════════════════════════════════════════
+local LIB_MARKER  = "ChatFree"   -- marker string that ONLY exists in the current (chat-free) library build
+local CACHE_TTL   = 300          -- seconds a downloaded file is reused before a refresh
+
+-- Session-wide download cache (survives re-executions of this script).
+local OXIDE_CACHE = _G.OxideLoaderCache or {}
+_G.OxideLoaderCache = OXIDE_CACHE
+
+local function cacheGet(key)
+    local entry = OXIDE_CACHE[key]
+    if entry and os.clock() - entry.at <= CACHE_TTL then
+        return entry.value
+    end
+    return nil
+end
+local function cacheSet(key, value)
+    OXIDE_CACHE[key] = { at = os.clock(), value = value }
+end
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- STATS TRACKING — fire-and-forget, never blocks or errors the load
@@ -117,11 +147,7 @@ end
 -- ══════════════════════════════════════════════════════════════════════════════
 -- FETCH: downloads a text file from a URL (tries request() then game.HttpGet)
 -- ══════════════════════════════════════════════════════════════════════════════
-local function FetchText(url)
-    -- Cache-bust so the CDN never serves a stale script.
-    local sep = string.find(url, "?", 1, true) and "&" or "?"
-    url = url .. sep .. "t=" .. tostring(os.time()) .. tostring(math.random(100000, 999999))
-
+local function FetchRaw(url)
     if type(request) == "function" then
         local ok, req = pcall(request, { Url = url, Method = "GET" })
         if ok and type(req) == "table" and req.StatusCode == 200
@@ -136,30 +162,70 @@ local function FetchText(url)
     return false, nil
 end
 
+local function CacheBust(url)
+    local sep = string.find(url, "?", 1, true) and "&" or "?"
+    return url .. sep .. "cb=" .. tostring(os.time()) .. tostring(math.random(100000, 999999))
+end
+
+-- Fetch a file, refusing anything that lacks `marker` (i.e. a stale CDN copy).
+-- Attempt 1 uses the plain URL (fast edge-cache hit). If the content is stale,
+-- attempts 2-4 append a unique cache-buster, which forces the CDN to go back
+-- to GitHub and serve the newest commit. Never returns a stale body.
+-- Returns: ok, body, attempt
+local function FetchFresh(url, marker, minBytes)
+    minBytes = minBytes or 100
+    for attempt = 1, 4 do
+        local target = attempt == 1 and url or CacheBust(url)
+        local ok, body = FetchRaw(target)
+        if ok and #body >= minBytes and (marker == nil or string.find(body, marker, 1, true)) then
+            return true, body, attempt
+        end
+        if attempt < 4 then task.wait(1) end
+    end
+    return false, nil, 4
+end
+
 -- ══════════════════════════════════════════════════════════════════════════════
 -- LOAD LIBRARY (download raw source → loadstring → execute)
 -- Now fully open source: the library is served as plain Lua, no encryption.
 -- ══════════════════════════════════════════════════════════════════════════════
+local function LibraryUsable(lib)
+    return type(lib) == "table"
+        and type(lib.CreateWindow) == "function"
+        and lib.ChatFree == true      -- only the current chat-free build is accepted
+end
+
 local function LoadLibrary()
-    local ok, source = FetchText(CFG.LIB_URL)
+    -- Fast path: reuse a chat-free library already fetched this session, so
+    -- re-running the hub costs zero downloads.
+    local cached = cacheGet("lib")
+    if LibraryUsable(cached) then
+        print("[Loader] Library reused from cache (v" .. tostring(cached.Version or "?") .. ") — no download needed.")
+        return cached
+    end
+
+    local ok, source, attempt = FetchFresh(CFG.LIB_URL, LIB_MARKER, 50000)
     if not ok then
-        error("[Loader] Failed to download library source.", 0)
+        error("[Loader] Could not fetch the CURRENT UI library — GitHub's CDN is still serving the old build. Re-run the script in a few seconds.", 0)
     end
 
     local chunk, compileErr = loadstring(source)
     if not chunk then
         error("[Loader] Library compile error: " .. tostring(compileErr), 0)
     end
-
     local ok2, lib = pcall(chunk)
     if not ok2 then
         error("[Loader] Library execution error: " .. tostring(lib), 0)
     end
-
-    if type(lib) ~= "table" or type(lib.CreateWindow) ~= "function" then
-        error("[Loader] Library loaded but has no CreateWindow.", 0)
+    if not LibraryUsable(lib) then
+        error("[Loader] Library loaded but it is NOT the current chat-free build (stale copy). Refusing to run it — re-run the script.", 0)
     end
 
+    cacheSet("lib", lib)
+    if attempt > 1 then
+        print("[Loader] CDN served a stale copy — refetched the current library (attempt " .. attempt .. ").")
+    end
+    print("[Loader] Library v" .. tostring(lib.Version or "?") .. " ready.")
     return lib
 end
 
@@ -167,10 +233,16 @@ end
 -- LOAD GAME SCRIPT (download → prepend Library shim → execute)
 -- ══════════════════════════════════════════════════════════════════════════════
 local function LoadGameScript(lib, scriptName)
-    local url = CFG.SCRIPTS_BASE .. scriptName
-    local ok, content = FetchText(url)
-    if not ok then
-        error("[Loader] Failed to download game script: " .. scriptName, 0)
+    local content = cacheGet("script:" .. scriptName)
+    local fromCache = content ~= nil
+    if not fromCache then
+        local url = CFG.SCRIPTS_BASE .. scriptName
+        local ok, body = FetchFresh(url, nil, 2000)
+        if not ok then
+            error("[Loader] Failed to download game script: " .. scriptName, 0)
+        end
+        content = body
+        cacheSet("script:" .. scriptName, content)
     end
 
     -- Use a global library binding here. Some scripts are close to Luau's
@@ -187,6 +259,7 @@ local function LoadGameScript(lib, scriptName)
     if not ok2 then
         error("[Loader] Game script runtime error (" .. scriptName .. "): " .. tostring(err), 0)
     end
+    return fromCache
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -197,15 +270,16 @@ local gameId = game.GameId
 local scriptName = ResolveScript(placeId, gameId)
 
 print("[Loader] PlaceId:", placeId, " GameId:", gameId, "→", scriptName)
-print("[Loader] Downloading library...")
 
+local t0 = os.clock()
 local Library = LoadLibrary()
 
 -- Expose globally (stripped scripts grab it via local Library = _G.OxideLib)
 _G.OxideLib = Library
 
-print("[Loader] Library loaded. Downloading game script: " .. scriptName .. "...")
-LoadGameScript(Library, scriptName)
+local scriptCached = LoadGameScript(Library, scriptName)
+print(string.format("[Loader] %s is now running (script %s, total %.2fs).",
+    scriptName, scriptCached and "from cache" or "downloaded", os.clock() - t0))
 
 -- Report the successful load, then keep a heartbeat alive for the Live tab.
 Track("launch")
@@ -215,5 +289,3 @@ pcall(task.spawn, function()
         Track("heartbeat")
     end
 end)
-
-print("[Loader] " .. scriptName .. " is now running.")
