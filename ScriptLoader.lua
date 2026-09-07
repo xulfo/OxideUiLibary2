@@ -167,20 +167,47 @@ local function CacheBust(url)
     return url .. sep .. "cb=" .. tostring(os.time()) .. tostring(math.random(100000, 999999))
 end
 
+-- GitHub's raw CDN can keep serving a stale copy for a while after an upload,
+-- and it ignores cache-busters and client Cache-Control headers. The GitHub
+-- contents API (api.github.com) is never CDN-cached, so it always returns the
+-- newest commit — it is used as the final, guaranteed-fresh fallback.
+local function FetchApiRaw(apiPath)
+    if type(request) ~= "function" then return false, nil end
+    local ok, req = pcall(request, {
+        Url = "https://api.github.com/repos/xulfo/OxideUiLibary2/contents/" .. apiPath,
+        Method = "GET",
+        Headers = {
+            ["Accept"]     = "application/vnd.github.raw+json",
+            ["User-Agent"] = "oxide-hub",
+        },
+    })
+    if ok and type(req) == "table" and req.StatusCode == 200
+        and type(req.Body) == "string" and #req.Body >= 100 then
+        return true, req.Body
+    end
+    return false, nil
+end
+
 -- Fetch a file, refusing anything that lacks `marker` (i.e. a stale CDN copy).
--- Attempt 1 uses the plain URL (fast edge-cache hit). If the content is stale,
--- attempts 2-4 append a unique cache-buster, which forces the CDN to go back
--- to GitHub and serve the newest commit. Never returns a stale body.
--- Returns: ok, body, attempt
-local function FetchFresh(url, marker, minBytes)
+-- Attempt 1 uses the plain URL (fast edge-cache hit), attempts 2-3 retry with
+-- a cache-buster while the CDN refreshes, and the last resort is the fresh
+-- contents-API fallback. A stale body is NEVER returned.
+-- Returns: ok, body, attempt (4 = came from the API fallback)
+local function FetchFresh(url, marker, minBytes, apiPath)
     minBytes = minBytes or 100
-    for attempt = 1, 4 do
+    for attempt = 1, 3 do
         local target = attempt == 1 and url or CacheBust(url)
         local ok, body = FetchRaw(target)
         if ok and #body >= minBytes and (marker == nil or string.find(body, marker, 1, true)) then
             return true, body, attempt
         end
-        if attempt < 4 then task.wait(1) end
+        if attempt < 3 then task.wait(1) end
+    end
+    if apiPath then
+        local ok, body = FetchApiRaw(apiPath)
+        if ok and #body >= minBytes and (marker == nil or string.find(body, marker, 1, true)) then
+            return true, body, 4
+        end
     end
     return false, nil, 4
 end
@@ -204,7 +231,7 @@ local function LoadLibrary()
         return cached
     end
 
-    local ok, source, attempt = FetchFresh(CFG.LIB_URL, LIB_MARKER, 50000)
+    local ok, source, attempt = FetchFresh(CFG.LIB_URL, LIB_MARKER, 50000, "UiLibary/Libary.lua")
     if not ok then
         error("[Loader] Could not fetch the CURRENT UI library — GitHub's CDN is still serving the old build. Re-run the script in a few seconds.", 0)
     end
@@ -222,7 +249,9 @@ local function LoadLibrary()
     end
 
     cacheSet("lib", lib)
-    if attempt > 1 then
+    if attempt >= 4 then
+        print("[Loader] CDN served a stale copy — fetched the current library from the fresh API fallback.")
+    elseif attempt > 1 then
         print("[Loader] CDN served a stale copy — refetched the current library (attempt " .. attempt .. ").")
     end
     print("[Loader] Library v" .. tostring(lib.Version or "?") .. " ready.")
@@ -237,7 +266,7 @@ local function LoadGameScript(lib, scriptName)
     local fromCache = content ~= nil
     if not fromCache then
         local url = CFG.SCRIPTS_BASE .. scriptName
-        local ok, body = FetchFresh(url, nil, 2000)
+        local ok, body = FetchFresh(url, nil, 2000, "scripts/" .. scriptName)
         if not ok then
             error("[Loader] Failed to download game script: " .. scriptName, 0)
         end
