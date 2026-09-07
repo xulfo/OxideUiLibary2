@@ -1,4 +1,4 @@
--- ═══ HUB STRIP POINT — when deployed via the ScriptLoader the ScriptLoader injects
+-- ═══ HUB STRIP POINT — when executed through the hub ScriptLoader, which injects
 --     "local Library = _G.OxideLib" above this line instead. ═══
 -- ══════════════════════════════════════════════════════════════════════════════
 
