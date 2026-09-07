@@ -1117,7 +1117,8 @@ end
 -- LIBRARY
 -- ════════════════════════════════════════════════════════════════════════════
 local Library = {
-    Version       = "2.5",
+    Version       = "2.6",
+    ChatFree      = true,      -- marker: this build has no hub chat (used by the loader to reject stale CDN copies)
     Themes        = THEMES,
     Icons         = ICONS,
     DefaultLogo   = DEFAULT_LOGO,
