@@ -1,7 +1,7 @@
 -- OxideUiLibary2 minimal loader
 -- Loads UiLibary/Libary.lua, then the correct game script for the PlaceId.
-local LIB_URL = "https://codeberg.org/xulfo/OxideUiLibary2/raw/branch/main/UiLibary/Libary.lua"
-local SCRIPTS_BASE = "https://codeberg.org/xulfo/OxideUiLibary2/raw/branch/main/scripts/"
+local LIB_URL = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/UiLibary/Libary.lua"
+local SCRIPTS_BASE = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/scripts/"
 
 local function FetchText(url)
     local sep = string.find(url, "?", 1, true) and "&" or "?"
