@@ -772,10 +772,12 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
                         if minX then
                             local color = rainbow or esp.color
                             if esp.visibleCheck then
-                                local myChar = LocalPlayer.Character
-                                local myHead = myChar and myChar:FindFirstChild("Head")
-                                local visible = IsPlayerVisible(char, myHead and myHead.Position or nil)
-                                if not visible then color = Color3.fromRGB(255, 60, 60) end
+                                local okVis, visible = pcall(function()
+                                    local myChar = LocalPlayer.Character
+                                    local myHead = myChar and myChar:FindFirstChild("Head")
+                                    return IsPlayerVisible(char, myHead and myHead.Position or nil)
+                                end)
+                                if okVis and not visible then color = Color3.fromRGB(255, 60, 60) end
                             end
                             if esp.box then
                                 if o.outline then o.outline.Visible = true; o.outline.Transparency = 0.6; o.outline.Color = color; o.outline.Thickness = esp.boxThickness + 2; o.outline.From = Vector2.new(minX - 1, minY - 1); o.outline.To = Vector2.new(maxX + 1, maxY + 1) end
@@ -802,8 +804,8 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
                                 o.hpText.Position = Vector2.new(minX - 6, maxY + 2)
                             end
                             if esp.weapon and o.weapon then
-                                local wName = GetEquippedWeaponName(plr)
-                                if wName then
+                                local okW, wName = pcall(GetEquippedWeaponName, plr)
+                                if okW and wName then
                                     o.weapon.Visible = true
                                     o.weapon.Size = esp.textSize - 3
                                     o.weapon.Color = rainbow or Color3.fromRGB(255, 220, 120)
@@ -838,46 +840,50 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
                                 end
                             end
                             if esp.skeleton and hrp then
-                                local pairs = GetSkeletonPairs(char)
-                                local skelColor = rainbow or esp.skeletonColor
-                                for i, bonePair in ipairs(pairs) do
-                                    local a = char:FindFirstChild(bonePair[1], true)
-                                    local b = char:FindFirstChild(bonePair[2], true)
-                                    if a and not a:IsA("BasePart") then a = nil end
-                                    if b and not b:IsA("BasePart") then b = nil end
-                                    if a and b then
-                                        local pa, pb = a.Position, b.Position
-                                        local l = o.skel[i]
-                                        if l then
-                                            local okA, sa, oa = pcall(function() return Camera:WorldToViewportPoint(pa) end)
-                                            local okB, sb, ob = pcall(function() return Camera:WorldToViewportPoint(pb) end)
-                                            if okA and okB and oa and ob and sa.Z > 0 and sb.Z > 0 then
-                                                l.Visible = true
-                                                l.Color = skelColor
-                                                l.From = Vector2.new(sa.X, sa.Y)
-                                                l.To = Vector2.new(sb.X, sb.Y)
+                                pcall(function()
+                                    local pairs = GetSkeletonPairs(char)
+                                    local skelColor = rainbow or esp.skeletonColor or Color3.fromRGB(120, 255, 120)
+                                    for i, bonePair in ipairs(pairs) do
+                                        local a = char:FindFirstChild(bonePair[1], true)
+                                        local b = char:FindFirstChild(bonePair[2], true)
+                                        if a and not a:IsA("BasePart") then a = nil end
+                                        if b and not b:IsA("BasePart") then b = nil end
+                                        if a and b then
+                                            local pa, pb = a.Position, b.Position
+                                            local l = o.skel[i]
+                                            if l then
+                                                local okA, sa, oa = pcall(function() return Camera:WorldToViewportPoint(pa) end)
+                                                local okB, sb, ob = pcall(function() return Camera:WorldToViewportPoint(pb) end)
+                                                if okA and okB and oa and ob and sa.Z > 0 and sb.Z > 0 then
+                                                    l.Visible = true
+                                                    l.Color = skelColor
+                                                    l.From = Vector2.new(sa.X, sa.Y)
+                                                    l.To = Vector2.new(sb.X, sb.Y)
+                                                end
                                             end
                                         end
                                     end
-                                end
+                                end)
                             end
                             if esp.offscreen and o.offscreen and hrp then
-                                local sp, on = Camera:WorldToViewportPoint(hrp.Position)
-                                if sp.Z > 0 and not on then
-                                    local vs = Camera.ViewportSize
-                                    local margin = 30
-                                    local cx = math.clamp(sp.X, margin, vs.X - margin)
-                                    local cy = math.clamp(sp.Y, margin, vs.Y - margin)
-                                    local edge = Vector2.new(cx, cy)
-                                    local dirV = (Vector2.new(sp.X, sp.Y) - edge)
-                                    if dirV.Magnitude > 8 then
-                                        local n = dirV.Unit * 14
-                                        o.offscreen.Visible = true
-                                        o.offscreen.Color = rainbow or esp.color
-                                        o.offscreen.From = edge - n
-                                        o.offscreen.To = edge
+                                pcall(function()
+                                    local sp, on = Camera:WorldToViewportPoint(hrp.Position)
+                                    if sp.Z > 0 and not on then
+                                        local vs = Camera.ViewportSize
+                                        local margin = 30
+                                        local cx = math.clamp(sp.X, margin, vs.X - margin)
+                                        local cy = math.clamp(sp.Y, margin, vs.Y - margin)
+                                        local edge = Vector2.new(cx, cy)
+                                        local dirV = (Vector2.new(sp.X, sp.Y) - edge)
+                                        if dirV.Magnitude > 8 then
+                                            local n = dirV.Unit * 14
+                                            o.offscreen.Visible = true
+                                            o.offscreen.Color = rainbow or esp.color
+                                            o.offscreen.From = edge - n
+                                            o.offscreen.To = edge
+                                        end
                                     end
-                                end
+                                end)
                             end
                         end
                     end
