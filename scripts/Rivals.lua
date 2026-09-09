@@ -1043,6 +1043,7 @@ end))
 -- single hook set (the original defines each hook 5x; only the last one wins).
 -- ══════════════════════════════════════════════════════════════════════════════
 local unlockEnabled = false
+local unlockFinishers = true
 local CosmeticLibrary, ItemLibrary, PlayerDataController
 local equipped = {}
 local favorites = {}
@@ -1068,6 +1069,9 @@ local function UnlockIsUnlockable(cosmetic)
     local t = cosmetic.Type or ""
     local n = (cosmetic.Name or ""):lower()
     if t == "Skin" or t == "Charm" or t == "Dance" or t == "Emote" or t == "Wrap" or t == "Wrapping" then
+        return true
+    end
+    if unlockFinishers and t == "Finisher" then
         return true
     end
     if n:find("charm") or n:find("dance") or n:find("emote") or n:find("wrap") then
@@ -1151,7 +1155,7 @@ local function ApplyUnlockAll(on)
             return
         end
 
-        -- OwnsCosmetic: every Skin/Charm/Dance/Emote/Wrap is owned (no Finishers)
+        -- OwnsCosmetic: every Skin/Charm/Dance/Emote/Wrap/Finisher is owned
         if not origOwnsCosmetic then
             origOwnsCosmetic = CosmeticLibrary.OwnsCosmetic
             CosmeticLibrary.OwnsCosmetic = function(self, inventory, name, weapon)
@@ -1408,8 +1412,15 @@ UnlockSub:AddToggle({
         if v and not (CosmeticLibrary and ItemLibrary and PlayerDataController) then
             Notify("Unlock All", "Cosmetic modules not found", "Error", 3.5)
         else
-            Notify("Unlock All", v and "All cosmetics unlocked (no Finishers)" or "Unlock All off", v and "Success" or "Error")
+            Notify("Unlock All", v and "All cosmetics unlocked" or "Unlock All off", v and "Success" or "Error")
         end
+    end,
+})
+UnlockSub:AddToggle({
+    Name = "Include Finishers", Default = true, Flag = "rv_unlock_finish",
+    Callback = function(v)
+        unlockFinishers = v
+        Notify("Unlock All", v and "Finishers included" or "Finishers excluded", v and "Success" or "Error")
     end,
 })
 
