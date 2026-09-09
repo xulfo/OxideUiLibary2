@@ -89,24 +89,8 @@ local function newDrawing(class, props)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
--- AIM TAB
+-- RAGE TAB CONFIG
 -- ══════════════════════════════════════════════════════════════════════════════
-local AimTab = Window:AddTab({ Name = "Aim", Subtitle = "Silent aim & FOV", Icon = "crosshair" })
-
-local aim = {
-    enabled = false,
-    fov = 180,
-    showFOV = true,
-    fovColor = Color3.fromRGB(255, 255, 255),
-    fovThickness = 1.5,
-    fovFilled = false,
-    fovRainbow = false,
-    targetLine = false,
-    targetLineColor = Color3.fromRGB(120, 200, 255),
-}
-
--- Ragebot config (declared before the hooks because the UseItem hook closure
--- needs to skip cam-data overrides while the ragebot is driving its own shots).
 local rage = {
     enabled = false,
     fireRate = 0.0005,
@@ -118,270 +102,6 @@ local rage = {
     knifeAdjust = true,
     randomOffset = true,
 }
-
--- ── FOV circle ────────────────────────────────────────────────────────────
-local fovCircle = hasDrawing and newDrawing("Circle", {
-    Thickness = 1.5, NumSides = 64, Radius = 180, Filled = false,
-    Visible = false, Color = Color3.fromRGB(255, 255, 255), Transparency = 1,
-}) or nil
-if fovCircle then pcall(function() fovCircle.ZIndex = 5 end) end
-
-local targetLine = hasDrawing and newDrawing("Line", { Thickness = 1.5, Visible = false, Color = Color3.fromRGB(120, 200, 255) }) or nil
-
-local fovRenderConn = RunService.RenderStepped:Connect(function()
-    if HUB.dead then return end
-    local enabled = aim.enabled
-    if fovCircle then
-        local show = enabled and aim.showFOV
-        fovCircle.Visible = show
-        if show then
-            pcall(function()
-                fovCircle.Radius = aim.fov
-                fovCircle.Thickness = aim.fovThickness
-                fovCircle.Filled = aim.fovFilled
-                fovCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-                if aim.fovRainbow then
-                    fovCircle.Color = Color3.fromHSV((tick() % 5) / 5, 0.85, 1)
-                else
-                    fovCircle.Color = aim.fovColor
-                end
-            end)
-        end
-    end
-end)
-table.insert(HUB.conns, fovRenderConn)
-
--- ── Silent aim (verbatim port of the verified script) ────────────────────
--- Target finder: closest enemy within 200 studs, skips self + same TeamID.
-local function FindTarget()
-    local myChar = LocalPlayer.Character
-    if not myChar then return nil end
-    local myRoot = myChar:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return nil end
-    local closest = nil
-    local closestDist = math.huge
-    local MAX_DISTANCE = 200
-    for _, player in ipairs(Players:GetPlayers()) do
-        local skip = false
-        if player == LocalPlayer then skip = true end
-        if not skip and player:GetAttribute("TeamID") == LocalPlayer:GetAttribute("TeamID") then skip = true end
-        if not skip then
-            local char = player.Character
-            if char then
-                local root = char:FindFirstChild("HumanoidRootPart")
-                local head = char:FindFirstChild("Head")
-                local hum = char:FindFirstChildOfClass("Humanoid")
-                if root and head and hum and hum.Health > 0 then
-                    local dist = (myRoot.Position - root.Position).Magnitude
-                    if dist <= MAX_DISTANCE and dist < closestDist then
-                        closestDist = dist
-                        closest = player
-                    end
-                end
-            end
-        end
-    end
-    return closest
-end
-
--- State mirrors the original script (__active, __target, __desync, __conn1,
--- __conn2, __task1, __oldfunc).
-local sa = {
-    active = false,
-    target = nil,
-    desync = false,
-    curr = nil,
-    conn1 = nil,
-    conn2 = nil,
-    task1 = nil,
-    oldfunc = nil,
-}
-
-local function saShutdown()
-    sa.active = false
-    if sa.conn1 then pcall(function() sa.conn1:Disconnect() end); sa.conn1 = nil end
-    if sa.conn2 then pcall(function() sa.conn2:Disconnect() end); sa.conn2 = nil end
-    if sa.task1 then pcall(function() task.cancel(sa.task1) end); sa.task1 = nil end
-    if sa.oldfunc and GunMod then
-        pcall(function() GunMod.StartShooting = sa.oldfunc end)
-        sa.oldfunc = nil
-    end
-end
-
-local function saDesyncStop()
-    sa.desync = false
-    sa.curr = nil
-    if sa.conn2 then
-        pcall(function() sa.conn2:Disconnect() end)
-        sa.conn2 = nil
-    end
-    pcall(function() RunService:UnbindFromRenderStep("__restore") end)
-end
-
-local function saDesyncStart(targetPlayer)
-    if sa.conn2 then pcall(function() sa.conn2:Disconnect() end) end
-    sa.desync = true
-    sa.curr = targetPlayer
-    sa.conn2 = RunService.Heartbeat:Connect(function()
-        if not sa.desync then return end
-        local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if not myRoot then return end
-        local tRoot = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if not tRoot then
-            saDesyncStop()
-            return
-        end
-        local oldCF = myRoot.CFrame
-        local oldVel = myRoot.Velocity
-        local oldRotVel = myRoot.RotVelocity
-        myRoot.CFrame = tRoot.CFrame * CFrame.new(0, -5, 0)
-        RunService:BindToRenderStep("__restore", 101, function()
-            if myRoot and myRoot.Parent then
-                myRoot.CFrame = oldCF
-                myRoot.Velocity = oldVel
-                myRoot.RotVelocity = oldRotVel
-            end
-            RunService:UnbindFromRenderStep("__restore")
-        end)
-    end)
-end
-
-local function InstallSilentAim()
-    if sa.active then return end
-    if not GunMod or type(GunMod.StartShooting) ~= "function" then return end
-    sa.active = true
-    -- Target refresh loop (__conn1 in the original)
-    sa.conn1 = RunService.Heartbeat:Connect(function()
-        if not sa.active then return end
-        sa.target = FindTarget()
-    end)
-    -- StartShooting hook (__oldfunc + __t6u7v8.StartShooting in the original)
-    sa.oldfunc = GunMod.StartShooting
-    local old = sa.oldfunc
-    GunMod.StartShooting = function(self, ...)
-        local results = { old(self, ...) }
-        if not self.ClientFighter or not self.ClientFighter.IsLocalPlayer then
-            return unpack(results)
-        end
-        local camdata = results[3]
-        if not camdata or typeof(camdata) ~= "table" then
-            return unpack(results)
-        end
-        results[4] = true
-        local targetPlayer = sa.target
-        if not sa.active or not targetPlayer or not targetPlayer.Character then
-            return unpack(results)
-        end
-        if not sa.desync or sa.curr ~= targetPlayer then
-            saDesyncStart(targetPlayer)
-            task.wait(0.1)
-        end
-        if sa.task1 then
-            pcall(function() task.cancel(sa.task1) end)
-            sa.task1 = nil
-        end
-        local head = targetPlayer.Character:FindFirstChild("Head")
-        if not head then return unpack(results) end
-        local headPos = head.Position
-        local headCF = head.CFrame
-        local originPos = headPos - Vector3.new(0, 5, 0)
-        local aimCF = CFrame.lookAt(originPos, headPos)
-        local orient = aimCF:ToOrientation()
-        local objOffset = headCF:ToObjectSpace(CFrame.new(headPos + Vector3.new(math.random(), math.random(), math.random())))
-        camdata[utf8.char(0)] = U:EncodeCFrame(CFrame.new(originPos, headPos) * CFrame.Angles(orient))
-        camdata[utf8.char(1)] = U:EncodeCFrame(CFrame.new(headPos) * CFrame.Angles(orient))
-        camdata[utf8.char(2)] = head
-        camdata[utf8.char(3)] = U:EncodeCFrame(objOffset)
-        sa.task1 = task.delay(0.15, function()
-            saDesyncStop()
-        end)
-        return unpack(results)
-    end
-end
-
-local function UninstallSilentAim()
-    saShutdown()
-end
-
--- ── Aim UI ────────────────────────────────────────────────────────────────
-local SilentSub = AimTab:AddSubTab("Silent Aim")
-
-SilentSub:AddSection("Silent Aim")
-SilentSub:AddToggle({
-    Name = "Silent Aim", Default = false, Flag = "rv_silent",
-    Callback = function(v)
-        aim.enabled = v
-        if v then
-            InstallSilentAim()
-            if not GunMod or type(GunMod.StartShooting) ~= "function" then
-                Notify("Aim", "Gun.StartShooting not found — silent aim unavailable", "Error", 3)
-            end
-        else
-            UninstallSilentAim()
-        end
-        Notify("Aim", v and "Silent Aim ON" or "Silent Aim OFF", v and "Success" or "Error")
-    end,
-})
-
-local FovSub = AimTab:AddSubTab("FOV Circle")
-FovSub:AddColorPicker({
-    Name = "FOV Color", Default = aim.fovColor, Flag = "rv_fovcolor",
-    Callback = function(c) aim.fovColor = c end,
-})
-FovSub:AddSlider({
-    Name = "Thickness", Min = 1, Max = 5, Default = 1.5, Suffix = "", Flag = "rv_fovthick",
-    Callback = function(v) aim.fovThickness = v end,
-})
-FovSub:AddToggle({
-    Name = "Filled", Default = false, Flag = "rv_fovfilled",
-    Callback = function(v) aim.fovFilled = v end,
-})
-FovSub:AddToggle({
-    Name = "Rainbow FOV", Default = false, Flag = "rv_fovrainbow",
-    Callback = function(v) aim.fovRainbow = v end,
-})
-
-local TargetSub = AimTab:AddSubTab("Target")
-TargetSub:AddToggle({
-    Name = "Target Line", Default = false, Flag = "rv_targetline",
-    Callback = function(v) aim.targetLine = v end,
-})
-TargetSub:AddColorPicker({
-    Name = "Line Color", Default = aim.targetLineColor, Flag = "rv_tlcolor",
-    Callback = function(c) aim.targetLineColor = c end,
-})
-local targetStatus = TargetSub:AddLabel({ Text = "Target: none" })
-track(RunService.RenderStepped:Connect(function()
-    if HUB.dead then return end
-    -- Only scan when something actually needs the target.
-    local needTarget = aim.enabled
-    if not needTarget then
-        if targetLine then targetLine.Visible = false end
-        return
-    end
-    local t = sa.target
-    if targetLine and hasDrawing then
-        targetLine.Visible = aim.targetLine and t ~= nil
-        if targetLine.Visible then
-            local head = t.Character and t.Character:FindFirstChild("Head")
-            if head then
-                targetLine.Color = aim.targetLineColor
-                local sp, on = Camera:WorldToViewportPoint(head.Position)
-                if on and sp.Z > 0 then
-                    targetLine.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-                    targetLine.To = Vector2.new(sp.X, sp.Y)
-                else
-                    targetLine.Visible = false
-                end
-            end
-        end
-    end
-    if targetStatus then
-        local name = t and t.Name or "none"
-        if t then name = t.DisplayName or t.Name end
-        targetStatus:Set("Target: " .. name)
-    end
-end))
 
 -- ── No Spread ───────────────────────────────────────────────────────────
 local noSpreadEnabled = false
@@ -400,25 +120,26 @@ local function ApplyNoSpread(on)
     end
 end
 
-local NoSpreadSub = AimTab:AddSubTab("No Spread")
+-- ══════════════════════════════════════════════════════════════════════════════
+-- RAGE TAB (Ragebot — desync auto-fire)
+-- ══════════════════════════════════════════════════════════════════════════════
+local RageTab = Window:AddTab({ Name = "Rage", Subtitle = "Ragebot & combat", Icon = "bolt" })
+
+-- No Spread (combat patch, lives on the Rage tab)
+local NoSpreadSub = RageTab:AddSubTab("No Spread")
 NoSpreadSub:AddSection("No Spread")
 NoSpreadSub:AddToggle({
     Name = "No Spread", Default = false, Flag = "rv_nospread",
     Callback = function(v)
         noSpreadEnabled = v
         ApplyNoSpread(v)
-        Notify("Aim", v and "No Spread ON" or "No Spread OFF", v and "Success" or "Error")
+        Notify("Rage", v and "No Spread ON" or "No Spread OFF", v and "Success" or "Error")
     end,
 })
 NoSpreadSub:AddParagraph({
     Title = "Note",
-    Text = "This is the same IsFullyAiming patch the silent aim uses. It's safe to run both — the toggle just gives you the spread removal on its own.",
+    Text = "Forces Gun.IsFullyAiming to always return true for perfect accuracy.",
 })
-
--- ══════════════════════════════════════════════════════════════════════════════
--- RAGE TAB (Ragebot — desync auto-fire)
--- ══════════════════════════════════════════════════════════════════════════════
-local RageTab = Window:AddTab({ Name = "Rage", Subtitle = "Ragebot & desync", Icon = "bolt" })
 
 -- cloneref'd services (anti-cheat safe). Fall back to plain services if the
 -- executor has no cloneref.
@@ -1565,8 +1286,6 @@ local function Cleanup()
     table.clear(spoofConns)
     wsEnabled = false; jpEnabled = false; infJump = false
     flyEnabled = false; noclipEnabled = false; fullbright = false
-    aim.enabled = false
-    UninstallSilentAim()
     for _, c in ipairs(HUB.conns) do pcall(function() c:Disconnect() end) end
     table.clear(HUB.conns)
     for _, d in ipairs(HUB.drawings) do pcall(function() d:Remove() end) end
@@ -1600,8 +1319,4 @@ SettingsSub:AddButton({
 -- ══════════════════════════════════════════════════════════════════════════════
 -- BOOT
 -- ══════════════════════════════════════════════════════════════════════════════
-if not GunMod or type(GunMod.StartShooting) ~= "function" then
-    Notify("RIVALS", "Gun.StartShooting not found — silent aim & wallbang unavailable", "Error", 3)
-else
-    Notify("RIVALS", "Oxide HUB loaded — silent aim & wallbang ready", "Success", 3)
-end
+Notify("RIVALS", "Oxide HUB loaded", "Success", 3)
