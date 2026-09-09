@@ -52,7 +52,6 @@ local LocalPlayer = Players.LocalPlayer
 local Camera      = Workspace.CurrentCamera
 
 local hasDrawing = (typeof(Drawing) == "table") or (Drawing ~= nil and pcall(function() return Drawing.new end))
-local hasHooks   = type(hookfunction) == "function"
 
 local function Notify(title, content, kind, dur)
     Window:Notify({ Title = title, Content = content, Type = kind or "Info", Duration = dur or 2.5 })
@@ -96,19 +95,23 @@ local AimTab = Window:AddTab({ Name = "Aim", Subtitle = "Silent aim & FOV", Icon
 
 local aim = {
     enabled = false,
+    maxDist = 200,
+    teamCheck = true,
+    jitter = true,
     fov = 180,
     showFOV = true,
-    teamCheck = true,
-    wallCheck = false,
-    hitPart = "Head",
-    hitChance = 100,
-    useMouseCenter = false,
     fovColor = Color3.fromRGB(255, 255, 255),
     fovThickness = 1.5,
     fovFilled = false,
     fovRainbow = false,
     targetLine = false,
     targetLineColor = Color3.fromRGB(120, 200, 255),
+}
+
+-- Wallbang config: desyncs your character under the target so shots ignore walls.
+local wb = {
+    enabled = false,
+    offset = 5,
 }
 
 -- Ragebot config (declared before the hooks because the UseItem hook closure
@@ -136,7 +139,7 @@ local targetLine = hasDrawing and newDrawing("Line", { Thickness = 1.5, Visible 
 
 local fovRenderConn = RunService.RenderStepped:Connect(function()
     if HUB.dead then return end
-    local enabled = aim.enabled and hasHooks
+    local enabled = aim.enabled
     if fovCircle then
         local show = enabled and aim.showFOV
         fovCircle.Visible = show
@@ -158,149 +161,179 @@ end)
 table.insert(HUB.conns, fovRenderConn)
 
 -- ── Target acquisition ────────────────────────────────────────────────────
--- Matches the verified working approach: any Entity-tagged model except our
--- own character, hit part found RECURSIVELY (RIVALS rig parts are nested),
--- closest to the FOV reference point wins.
-local function PickHitPart(char)
-    local want = aim.hitPart
-    if want == "Random" then
-        want = (math.random() > 0.5) and "Head" or "HumanoidRootPart"
-    end
-    local part = char:FindFirstChild(want, true) or char:FindFirstChild("HumanoidRootPart", true) or char:FindFirstChild("Head", true)
-    if part and part:IsA("BasePart") then return part end
-    return nil
-end
-
-local function IsVisible(part)
-    if not aim.wallCheck then return true end
-    local camPos = Camera.CFrame.Position
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { LocalPlayer.Character, part.Parent, Camera }
-    local dir = part.Position - camPos
-    local res = Workspace:Raycast(camPos, dir, params)
-    if res and res.Instance and not res.Instance:IsDescendantOf(part.Parent) then return false end
-    return true
-end
-
--- Target cache: the full scan touches every Entity-tagged instance, so we
--- only recompute it on a short throttle and reuse it everywhere (render loop,
--- target line, status label, and both hooks). No more per-frame lag spikes.
-local targetCache = { part = nil, at = 0 }
+-- Distance-based closest-enemy lock (TeamID attribute team check), exactly
+-- like the verified working script. Returns the target PLAYER.
+local targetCache = { player = nil, at = 0 }
 local TARGET_TTL = 0.05
 
-local function GetTarget(force)
-    if not aim.enabled or not hasHooks then
-        targetCache.part = nil
-        return nil
-    end
-    local now = os.clock()
-    if not force and now - targetCache.at < TARGET_TTL then
-        return targetCache.part
-    end
-    targetCache.at = now
-    if math.random(1, 100) > aim.hitChance then
-        targetCache.part = nil
-        return nil
-    end
-    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    local ref = aim.useMouseCenter and UserInputService:GetMouseLocation() or center
-    local bestPart, bestDist = nil, aim.fov
-    for _, ent in ipairs(CollectionService:GetTagged("Entity")) do
-        if ent ~= LocalPlayer.Character then
-            local part = PickHitPart(ent)
-            if part and IsVisible(part) then
-                -- optional team filter: only skips when both sides actually have teams
-                local skip = false
-                if aim.teamCheck then
-                    local plr = Players:GetPlayerFromCharacter(ent)
-                    if plr and plr.Team and LocalPlayer.Team and plr.Team == LocalPlayer.Team then skip = true end
-                end
-                if not skip then
-                    local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
-                    if onScreen and sp.Z > 0 then
-                        local d = (Vector2.new(sp.X, sp.Y) - ref).Magnitude
-                        if d < bestDist then bestDist, bestPart = d, part end
+local function FindTarget()
+    local myChar = LocalPlayer.Character
+    if not myChar then return nil end
+    local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+    local myTeam = LocalPlayer:GetAttribute("TeamID")
+    local closest, closestDist = nil, math.huge
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then
+            -- skip self
+        else
+            local pTeam = player:GetAttribute("TeamID")
+            if not (aim.teamCheck and pTeam and myTeam and pTeam == myTeam) then
+                local char = player.Character
+                if char then
+                    local root = char:FindFirstChild("HumanoidRootPart")
+                    local head = char:FindFirstChild("Head")
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if root and head and hum and hum.Health > 0 then
+                        local dist = (myRoot.Position - root.Position).Magnitude
+                        if dist <= aim.maxDist and dist < closestDist then
+                            closestDist = dist
+                            closest = player
+                        end
                     end
                 end
             end
         end
     end
-    targetCache.part = bestPart
-    return bestPart
+    return closest
 end
 
--- ── Cam-data spoof payload (same structure the game expects) ─────────────
-local function MakeCamData(origin, part)
-    local cf = part.CFrame
-    local d = {}
-    d[utf8.char(1)] = {
-        [utf8.char(0)] = U and U:EncodeCFrame(CFrame.lookAt(origin, part.Position)) or CFrame.lookAt(origin, part.Position),
-        [utf8.char(1)] = U and U:EncodeCFrame(cf) or cf,
-        [utf8.char(2)] = part,
-        [utf8.char(3)] = U and U:EncodeCFrame(cf:ToObjectSpace(CFrame.new(part.Position))) or cf:ToObjectSpace(CFrame.new(part.Position)),
-    }
-    return d
+local function GetTarget(force)
+    if not (aim.enabled or wb.enabled) then
+        targetCache.player = nil
+        return nil
+    end
+    local now = os.clock()
+    if not force and now - targetCache.at < TARGET_TTL then
+        return targetCache.player
+    end
+    targetCache.at = now
+    targetCache.player = FindTarget()
+    return targetCache.player
 end
 
--- ── Hooks (restored on unload) ────────────────────────────────────────────
-local hooksInstalled = false
-local originalRaycastHook, originalFireServer, originalIsFullyAiming
+-- ── StartShooting hook (silent aim core) ─────────────────────────────────
+-- Hooks Gun.StartShooting, rewrites the camdata table it returns (index 3)
+-- so the shot registers on the target's head, and sets index 4 = true.
+-- When wallbang is on it also desyncs the character under the target first.
+local origStartShooting
+local wbActive = false
+local wbCurrent = nil
+local wbConn = nil
+local wbTask = nil
 
-local function InstallHooks()
-    if hooksInstalled or not hasHooks then return end
-    -- 1. Redirect the raycast the server uses to validate hits
-    if GU and type(GU.GetEntitiesFromRaycast) == "function" then
-        originalRaycastHook = GU.GetEntitiesFromRaycast
-        GU.GetEntitiesFromRaycast = function(self, envID, params, origin, dir, maxDist, ...)
-            local t = GetTarget()
-            if t then
-                local dist = (t.Position - origin).Magnitude
-                dir = (t.Position - origin).Unit
-                if dist > maxDist then maxDist = dist + 5 end
-            end
-            return originalRaycastHook(self, envID, params, origin, dir, maxDist, ...)
+local function StopDesync()
+    wbActive = false
+    wbCurrent = nil
+    if wbConn then
+        pcall(function() wbConn:Disconnect() end)
+        wbConn = nil
+    end
+    if wbTask then
+        pcall(function() task.cancel(wbTask) end)
+        wbTask = nil
+    end
+    pcall(function() RunService:UnbindFromRenderStep("OxideWB") end)
+end
+
+local function StartDesync(targetPlayer)
+    if wbConn then pcall(function() wbConn:Disconnect() end) end
+    wbActive = true
+    wbCurrent = targetPlayer
+    wbConn = RunService.Heartbeat:Connect(function()
+        if not wbActive then return end
+        local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not myRoot then return end
+        local tRoot = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not tRoot then
+            StopDesync()
+            return
         end
-    end
-    -- 2. Spoof cam data on the UseItem remote so shots count as on-target.
-    --    MUST use hookfunction: a plain `UseItem.FireServer = fn` assignment
-    --    is a no-op on RemoteEvent methods.
-    if UseItem and type(UseItem.FireServer) == "function" then
-        originalFireServer = UseItem.FireServer
-        local fire = originalFireServer
-        UseItem.FireServer = hookfunction(UseItem.FireServer, newcclosure(function(self, objID, enumVal, camdata, extra)
-            -- Ragebot drives its own camdata + desync; let its shots pass through untouched.
-            if aim.enabled and not rage.enabled and enumVal == enumStartShooting then
-                local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart", true)
-                local t = GetTarget()
-                if root and t then camdata = MakeCamData(root.Position, t) end
+        local oldCF = myRoot.CFrame
+        local oldVel = myRoot.Velocity
+        local oldRotVel = myRoot.RotVelocity
+        myRoot.CFrame = tRoot.CFrame * CFrame.new(0, -wb.offset, 0)
+        RunService:BindToRenderStep("OxideWB", 101, function()
+            if myRoot and myRoot.Parent then
+                myRoot.CFrame = oldCF
+                myRoot.Velocity = oldVel
+                myRoot.RotVelocity = oldRotVel
             end
-            return fire(self, objID, enumVal, camdata, extra)
-        end))
-    end
-    -- 3. Always "fully aiming" while the hub is up
-    if GunMod and type(GunMod.IsFullyAiming) == "function" then
-        originalIsFullyAiming = GunMod.IsFullyAiming
-        GunMod.IsFullyAiming = function() return true end
-    end
-    hooksInstalled = true
+            RunService:UnbindFromRenderStep("OxideWB")
+        end)
+    end)
 end
 
-local function UninstallHooks()
-    if not hooksInstalled then return end
-    if GU and originalRaycastHook then
-        pcall(function() GU.GetEntitiesFromRaycast = originalRaycastHook end)
-        originalRaycastHook = nil
+local function InstallSilentAim()
+    if origStartShooting then return end
+    if not GunMod or type(GunMod.StartShooting) ~= "function" then return end
+    origStartShooting = GunMod.StartShooting
+    GunMod.StartShooting = function(self, ...)
+        local results = { origStartShooting(self, ...) }
+        -- Only touch shots from the local player's fighter
+        if not self.ClientFighter or not self.ClientFighter.IsLocalPlayer then
+            return unpack(results)
+        end
+        local camdata = results[3]
+        if not camdata or typeof(camdata) ~= "table" then
+            return unpack(results)
+        end
+        results[4] = true
+        local targetPlayer = GetTarget()
+        if not targetPlayer or not targetPlayer.Character then
+            return unpack(results)
+        end
+
+        -- Wallbang: desync under the target before the shot registers
+        if wb.enabled and (not wbActive or wbCurrent ~= targetPlayer) then
+            StartDesync(targetPlayer)
+            task.wait(0.1)
+        end
+        if wbTask then
+            pcall(function() task.cancel(wbTask) end)
+            wbTask = nil
+        end
+
+        local head = targetPlayer.Character:FindFirstChild("Head")
+        if not head then return unpack(results) end
+
+        local headPos = head.Position
+        local headCF = head.CFrame
+        local originPos
+        if wb.enabled then
+            originPos = headPos - Vector3.new(0, wb.offset, 0)
+        else
+            local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            originPos = myRoot and myRoot.Position or headPos
+        end
+        local aimCF = CFrame.lookAt(originPos, headPos)
+        local orient = aimCF:ToOrientation()
+        local jitter = Vector3.zero
+        if aim.jitter then
+            jitter = Vector3.new(math.random(), math.random(), math.random())
+        end
+        local objOffset = headCF:ToObjectSpace(CFrame.new(headPos + jitter))
+
+        camdata[utf8.char(0)] = U:EncodeCFrame(CFrame.new(originPos, headPos) * CFrame.Angles(orient))
+        camdata[utf8.char(1)] = U:EncodeCFrame(CFrame.new(headPos) * CFrame.Angles(orient))
+        camdata[utf8.char(2)] = head
+        camdata[utf8.char(3)] = U:EncodeCFrame(objOffset)
+
+        if wb.enabled then
+            wbTask = task.delay(0.15, function()
+                StopDesync()
+            end)
+        end
+        return unpack(results)
     end
-    if UseItem and originalFireServer then
-        pcall(function() UseItem.FireServer = hookfunction(UseItem.FireServer, originalFireServer) end)
-        originalFireServer = nil
+end
+
+local function UninstallSilentAim()
+    if origStartShooting and GunMod then
+        pcall(function() GunMod.StartShooting = origStartShooting end)
+        origStartShooting = nil
     end
-    if GunMod and originalIsFullyAiming then
-        pcall(function() GunMod.IsFullyAiming = originalIsFullyAiming end)
-        originalIsFullyAiming = nil
-    end
-    hooksInstalled = false
+    StopDesync()
 end
 
 -- ── Aim UI ────────────────────────────────────────────────────────────────
@@ -309,51 +342,33 @@ local SilentSub = AimTab:AddSubTab("Silent Aim")
 SilentSub:AddSection("Silent Aim")
 SilentSub:AddToggle({
     Name = "Silent Aim", Default = false, Flag = "rv_silent",
-    Description = "Redirects shots to nearest enemy in FOV (raycast + camdata hooks)",
+    Description = "Hooks Gun.StartShooting — every shot registers on the locked enemy's head",
     Callback = function(v)
         aim.enabled = v
         if v then
-            InstallHooks()
-            if not hasHooks then
-                Notify("Aim", "Executor has no hookfunction — silent aim unavailable", "Error", 3)
+            InstallSilentAim()
+            if not GunMod or type(GunMod.StartShooting) ~= "function" then
+                Notify("Aim", "Gun.StartShooting not found — silent aim unavailable", "Error", 3)
             end
         end
         Notify("Aim", v and "Silent Aim ON" or "Silent Aim OFF", v and "Success" or "Error")
     end,
 })
 SilentSub:AddSlider({
-    Name = "FOV Radius", Min = 10, Max = 600, Default = 180, Suffix = "px", Flag = "rv_fov",
-    Callback = function(v) aim.fov = v end,
-})
-SilentSub:AddToggle({
-    Name = "Show FOV", Default = true, Flag = "rv_showfov",
-    Callback = function(v) aim.showFOV = v end,
+    Name = "Lock Range", Min = 20, Max = 600, Default = 200, Suffix = "studs", Flag = "rv_maxdist",
+    Description = "Max distance to auto-lock the closest enemy",
+    Callback = function(v) aim.maxDist = v end,
 })
 SilentSub:AddToggle({
     Name = "Team Check", Default = true, Flag = "rv_teamcheck",
-    Description = "Skips players on your team (auto-off in FFA)",
+    Description = "Skips players with the same TeamID attribute",
     Callback = function(v) aim.teamCheck = v end,
 })
 SilentSub:AddToggle({
-    Name = "Wall Check", Default = false, Flag = "rv_wallcheck",
-    Description = "Only targets enemies you can actually see",
-    Callback = function(v) aim.wallCheck = v end,
+    Name = "Jitter", Default = true, Flag = "rv_jitter",
+    Description = "Small random spread on the aim point (anti-detection)",
+    Callback = function(v) aim.jitter = v end,
 })
-SilentSub:AddSlider({
-    Name = "Hit Chance", Min = 0, Max = 100, Default = 100, Suffix = "%", Flag = "rv_hitchance",
-    Callback = function(v) aim.hitChance = v end,
-})
-SilentSub:AddToggle({
-    Name = "Aim at Mouse", Default = false, Flag = "rv_mousecenter",
-    Description = "Measure FOV from cursor instead of screen center",
-    Callback = function(v) aim.useMouseCenter = v end,
-})
-local applyHitPart = function(v) aim.hitPart = v end
-local hitPartDropdown = SilentSub:AddDropdown({
-    Name = "Hit Part", Options = { "Head", "HumanoidRootPart", "UpperTorso", "Random" },
-    Default = "Head", MaxVisible = 4, Flag = "rv_hitpart", Callback = applyHitPart,
-})
-registerResync(hitPartDropdown, applyHitPart)
 
 local FovSub = AimTab:AddSubTab("FOV Circle")
 FovSub:AddColorPicker({
@@ -386,9 +401,8 @@ TargetSub:AddColorPicker({
 local targetStatus = TargetSub:AddLabel({ Text = "Target: none" })
 track(RunService.RenderStepped:Connect(function()
     if HUB.dead then return end
-    -- Only scan when there is something that actually needs the target
-    -- (line enabled, label visible, or aim on). Otherwise skip entirely.
-    local needTarget = aim.enabled and (aim.targetLine or true)
+    -- Only scan when something actually needs the target.
+    local needTarget = (aim.enabled or wb.enabled)
     if not needTarget then
         if targetLine then targetLine.Visible = false end
         return
@@ -397,25 +411,51 @@ track(RunService.RenderStepped:Connect(function()
     if targetLine and hasDrawing then
         targetLine.Visible = aim.targetLine and t ~= nil
         if targetLine.Visible then
-            targetLine.Color = aim.targetLineColor
-            local sp, on = Camera:WorldToViewportPoint(t.Position)
-            if on and sp.Z > 0 then
-                targetLine.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-                targetLine.To = Vector2.new(sp.X, sp.Y)
-            else
-                targetLine.Visible = false
+            local head = t.Character and t.Character:FindFirstChild("Head")
+            if head then
+                targetLine.Color = aim.targetLineColor
+                local sp, on = Camera:WorldToViewportPoint(head.Position)
+                if on and sp.Z > 0 then
+                    targetLine.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                    targetLine.To = Vector2.new(sp.X, sp.Y)
+                else
+                    targetLine.Visible = false
+                end
             end
         end
     end
     if targetStatus then
-        local name = t and (t.Parent and t.Parent.Name or "?") or "none"
-        if t then
-            local plr = Players:GetPlayerFromCharacter(t.Parent)
-            name = plr and plr.DisplayName or t.Parent.Name
-        end
+        local name = t and t.Name or "none"
+        if t then name = t.DisplayName or t.Name end
         targetStatus:Set("Target: " .. name)
     end
 end))
+
+-- ── Wallbang (desync) ────────────────────────────────────────────────────
+local WbSub = AimTab:AddSubTab("Wallbang")
+WbSub:AddSection("Wallbang")
+WbSub:AddToggle({
+    Name = "Wallbang", Default = false, Flag = "rv_wb",
+    Description = "Desyncs your character under the enemy so shots ignore walls (needs Silent Aim or Ragebot target lock)",
+    Callback = function(v)
+        wb.enabled = v
+        if v then
+            InstallSilentAim()
+        else
+            StopDesync()
+        end
+        Notify("Wallbang", v and "Wallbang ON" or "Wallbang OFF", v and "Success" or "Error")
+    end,
+})
+WbSub:AddSlider({
+    Name = "Desync Offset", Min = 1, Max = 20, Default = 5, Suffix = "studs", Flag = "rv_wb_offset",
+    Description = "How far below the target to desync your character",
+    Callback = function(v) wb.offset = v end,
+})
+WbSub:AddParagraph({
+    Title = "Note",
+    Text = "Wallbang teleports your HumanoidRootPart under the enemy for the exact frame of each shot and restores it right after. It also shifts the shot origin to below the head so walls between you and the target never block.",
+})
 
 -- ── No Spread ───────────────────────────────────────────────────────────
 local noSpreadEnabled = false
@@ -1614,7 +1654,8 @@ local function Cleanup()
     table.clear(spoofConns)
     wsEnabled = false; jpEnabled = false; infJump = false
     flyEnabled = false; noclipEnabled = false; fullbright = false
-    UninstallHooks()
+    aim.enabled = false; wb.enabled = false
+    UninstallSilentAim()
     for _, c in ipairs(HUB.conns) do pcall(function() c:Disconnect() end) end
     table.clear(HUB.conns)
     for _, d in ipairs(HUB.drawings) do pcall(function() d:Remove() end) end
@@ -1648,10 +1689,8 @@ SettingsSub:AddButton({
 -- ══════════════════════════════════════════════════════════════════════════════
 -- BOOT
 -- ══════════════════════════════════════════════════════════════════════════════
-if not hasHooks then
-    Notify("RIVALS", "hookfunction not available — silent aim disabled", "Error", 3)
-elseif not (U and GU and EL and GunMod and UseItem and enumStartShooting) then
-    Notify("RIVALS", "Some game modules changed — silent aim may be limited", "Error", 3)
+if not GunMod or type(GunMod.StartShooting) ~= "function" then
+    Notify("RIVALS", "Gun.StartShooting not found — silent aim & wallbang unavailable", "Error", 3)
 else
-    Notify("RIVALS", "Oxide HUB loaded — silent aim ready", "Success", 3)
+    Notify("RIVALS", "Oxide HUB loaded — silent aim & wallbang ready", "Success", 3)
 end
