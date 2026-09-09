@@ -1211,7 +1211,7 @@ local function ApplyUnlockAll(on)
                 merged.Name = weaponName
                 if equipped[weaponName] then
                     for cosmeticType, cosmeticData in pairs(equipped[weaponName]) do
-                        if cosmeticType == "Skin" or cosmeticType == "Charm" or cosmeticType == "Wrap" or cosmeticType == "Wrapping" then
+                        if cosmeticType == "Skin" or cosmeticType == "Charm" or cosmeticType == "Wrap" or cosmeticType == "Wrapping" or cosmeticType == "Finisher" then
                             merged[cosmeticType] = cosmeticData
                         end
                     end
