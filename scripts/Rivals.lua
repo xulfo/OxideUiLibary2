@@ -95,9 +95,6 @@ local AimTab = Window:AddTab({ Name = "Aim", Subtitle = "Silent aim & FOV", Icon
 
 local aim = {
     enabled = false,
-    maxDist = 200,
-    teamCheck = true,
-    jitter = true,
     fov = 180,
     showFOV = true,
     fovColor = Color3.fromRGB(255, 255, 255),
@@ -154,36 +151,31 @@ local fovRenderConn = RunService.RenderStepped:Connect(function()
 end)
 table.insert(HUB.conns, fovRenderConn)
 
--- ── Target acquisition ────────────────────────────────────────────────────
--- Distance-based closest-enemy lock (TeamID attribute team check), exactly
--- like the verified working script. Returns the target PLAYER.
-local targetCache = { player = nil, at = 0 }
-local TARGET_TTL = 0.05
-
+-- ── Silent aim (verbatim port of the verified script) ────────────────────
+-- Target finder: closest enemy within 200 studs, skips self + same TeamID.
 local function FindTarget()
     local myChar = LocalPlayer.Character
     if not myChar then return nil end
     local myRoot = myChar:FindFirstChild("HumanoidRootPart")
     if not myRoot then return nil end
-    local myTeam = LocalPlayer:GetAttribute("TeamID")
-    local closest, closestDist = nil, math.huge
+    local closest = nil
+    local closestDist = math.huge
+    local MAX_DISTANCE = 200
     for _, player in ipairs(Players:GetPlayers()) do
-        if player == LocalPlayer then
-            -- skip self
-        else
-            local pTeam = player:GetAttribute("TeamID")
-            if not (aim.teamCheck and pTeam and myTeam and pTeam == myTeam) then
-                local char = player.Character
-                if char then
-                    local root = char:FindFirstChild("HumanoidRootPart")
-                    local head = char:FindFirstChild("Head")
-                    local hum = char:FindFirstChildOfClass("Humanoid")
-                    if root and head and hum and hum.Health > 0 then
-                        local dist = (myRoot.Position - root.Position).Magnitude
-                        if dist <= aim.maxDist and dist < closestDist then
-                            closestDist = dist
-                            closest = player
-                        end
+        local skip = false
+        if player == LocalPlayer then skip = true end
+        if not skip and player:GetAttribute("TeamID") == LocalPlayer:GetAttribute("TeamID") then skip = true end
+        if not skip then
+            local char = player.Character
+            if char then
+                local root = char:FindFirstChild("HumanoidRootPart")
+                local head = char:FindFirstChild("Head")
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if root and head and hum and hum.Health > 0 then
+                    local dist = (myRoot.Position - root.Position).Magnitude
+                    if dist <= MAX_DISTANCE and dist < closestDist then
+                        closestDist = dist
+                        closest = player
                     end
                 end
             end
@@ -192,79 +184,82 @@ local function FindTarget()
     return closest
 end
 
-local function GetTarget(force)
-    if not aim.enabled then
-        targetCache.player = nil
-        return nil
+-- State mirrors the original script (__active, __target, __desync, __conn1,
+-- __conn2, __task1, __oldfunc).
+local sa = {
+    active = false,
+    target = nil,
+    desync = false,
+    curr = nil,
+    conn1 = nil,
+    conn2 = nil,
+    task1 = nil,
+    oldfunc = nil,
+}
+
+local function saShutdown()
+    sa.active = false
+    if sa.conn1 then pcall(function() sa.conn1:Disconnect() end); sa.conn1 = nil end
+    if sa.conn2 then pcall(function() sa.conn2:Disconnect() end); sa.conn2 = nil end
+    if sa.task1 then pcall(function() task.cancel(sa.task1) end); sa.task1 = nil end
+    if sa.oldfunc and GunMod then
+        pcall(function() GunMod.StartShooting = sa.oldfunc end)
+        sa.oldfunc = nil
     end
-    local now = os.clock()
-    if not force and now - targetCache.at < TARGET_TTL then
-        return targetCache.player
-    end
-    targetCache.at = now
-    targetCache.player = FindTarget()
-    return targetCache.player
 end
 
--- ── StartShooting hook (silent aim core) ─────────────────────────────────
--- Hooks Gun.StartShooting, rewrites the camdata table it returns (index 3)
--- so the shot registers on the target's head (index 4 = true), and desyncs
--- your character under the target first so the shot ignores walls.
-local origStartShooting
-local desyncActive = false
-local desyncCurr = nil
-local desyncConn = nil
-local desyncTask = nil
-
-local function StopDesync()
-    desyncActive = false
-    desyncCurr = nil
-    if desyncConn then
-        pcall(function() desyncConn:Disconnect() end)
-        desyncConn = nil
+local function saDesyncStop()
+    sa.desync = false
+    sa.curr = nil
+    if sa.conn2 then
+        pcall(function() sa.conn2:Disconnect() end)
+        sa.conn2 = nil
     end
-    if desyncTask then
-        pcall(function() task.cancel(desyncTask) end)
-        desyncTask = nil
-    end
-    pcall(function() RunService:UnbindFromRenderStep("OxideWB") end)
+    pcall(function() RunService:UnbindFromRenderStep("__restore") end)
 end
 
-local function StartDesync(targetPlayer)
-    if desyncConn then pcall(function() desyncConn:Disconnect() end) end
-    desyncActive = true
-    desyncCurr = targetPlayer
-    desyncConn = RunService.Heartbeat:Connect(function()
-        if not desyncActive then return end
+local function saDesyncStart(targetPlayer)
+    if sa.conn2 then pcall(function() sa.conn2:Disconnect() end) end
+    sa.desync = true
+    sa.curr = targetPlayer
+    sa.conn2 = RunService.Heartbeat:Connect(function()
+        if not sa.desync then return end
         local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         if not myRoot then return end
         local tRoot = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
         if not tRoot then
-            StopDesync()
+            saDesyncStop()
             return
         end
         local oldCF = myRoot.CFrame
         local oldVel = myRoot.Velocity
         local oldRotVel = myRoot.RotVelocity
         myRoot.CFrame = tRoot.CFrame * CFrame.new(0, -5, 0)
-        RunService:BindToRenderStep("OxideWB", 101, function()
+        RunService:BindToRenderStep("__restore", 101, function()
             if myRoot and myRoot.Parent then
                 myRoot.CFrame = oldCF
                 myRoot.Velocity = oldVel
                 myRoot.RotVelocity = oldRotVel
             end
-            RunService:UnbindFromRenderStep("OxideWB")
+            RunService:UnbindFromRenderStep("__restore")
         end)
     end)
 end
 
 local function InstallSilentAim()
-    if origStartShooting then return end
+    if sa.active then return end
     if not GunMod or type(GunMod.StartShooting) ~= "function" then return end
-    origStartShooting = GunMod.StartShooting
+    sa.active = true
+    -- Target refresh loop (__conn1 in the original)
+    sa.conn1 = RunService.Heartbeat:Connect(function()
+        if not sa.active then return end
+        sa.target = FindTarget()
+    end)
+    -- StartShooting hook (__oldfunc + __t6u7v8.StartShooting in the original)
+    sa.oldfunc = GunMod.StartShooting
+    local old = sa.oldfunc
     GunMod.StartShooting = function(self, ...)
-        local results = { origStartShooting(self, ...) }
-        -- Only touch shots from the local player's fighter
+        local results = { old(self, ...) }
         if not self.ClientFighter or not self.ClientFighter.IsLocalPlayer then
             return unpack(results)
         end
@@ -273,53 +268,39 @@ local function InstallSilentAim()
             return unpack(results)
         end
         results[4] = true
-        local targetPlayer = GetTarget()
-        if not targetPlayer or not targetPlayer.Character then
+        local targetPlayer = sa.target
+        if not sa.active or not targetPlayer or not targetPlayer.Character then
             return unpack(results)
         end
-
-        -- Desync under the target before the shot registers
-        if not desyncActive or desyncCurr ~= targetPlayer then
-            StartDesync(targetPlayer)
+        if not sa.desync or sa.curr ~= targetPlayer then
+            saDesyncStart(targetPlayer)
             task.wait(0.1)
         end
-        if desyncTask then
-            pcall(function() task.cancel(desyncTask) end)
-            desyncTask = nil
+        if sa.task1 then
+            pcall(function() task.cancel(sa.task1) end)
+            sa.task1 = nil
         end
-
         local head = targetPlayer.Character:FindFirstChild("Head")
         if not head then return unpack(results) end
-
         local headPos = head.Position
         local headCF = head.CFrame
         local originPos = headPos - Vector3.new(0, 5, 0)
         local aimCF = CFrame.lookAt(originPos, headPos)
         local orient = aimCF:ToOrientation()
-        local jitter = Vector3.zero
-        if aim.jitter then
-            jitter = Vector3.new(math.random(), math.random(), math.random())
-        end
-        local objOffset = headCF:ToObjectSpace(CFrame.new(headPos + jitter))
-
+        local objOffset = headCF:ToObjectSpace(CFrame.new(headPos + Vector3.new(math.random(), math.random(), math.random())))
         camdata[utf8.char(0)] = U:EncodeCFrame(CFrame.new(originPos, headPos) * CFrame.Angles(orient))
         camdata[utf8.char(1)] = U:EncodeCFrame(CFrame.new(headPos) * CFrame.Angles(orient))
         camdata[utf8.char(2)] = head
         camdata[utf8.char(3)] = U:EncodeCFrame(objOffset)
-
-        desyncTask = task.delay(0.15, function()
-            StopDesync()
+        sa.task1 = task.delay(0.15, function()
+            saDesyncStop()
         end)
         return unpack(results)
     end
 end
 
 local function UninstallSilentAim()
-    if origStartShooting and GunMod then
-        pcall(function() GunMod.StartShooting = origStartShooting end)
-        origStartShooting = nil
-    end
-    StopDesync()
+    saShutdown()
 end
 
 -- ── Aim UI ────────────────────────────────────────────────────────────────
@@ -335,21 +316,11 @@ SilentSub:AddToggle({
             if not GunMod or type(GunMod.StartShooting) ~= "function" then
                 Notify("Aim", "Gun.StartShooting not found — silent aim unavailable", "Error", 3)
             end
+        else
+            UninstallSilentAim()
         end
         Notify("Aim", v and "Silent Aim ON" or "Silent Aim OFF", v and "Success" or "Error")
     end,
-})
-SilentSub:AddSlider({
-    Name = "Lock Range", Min = 20, Max = 600, Default = 200, Suffix = "studs", Flag = "rv_maxdist",
-    Callback = function(v) aim.maxDist = v end,
-})
-SilentSub:AddToggle({
-    Name = "Team Check", Default = true, Flag = "rv_teamcheck",
-    Callback = function(v) aim.teamCheck = v end,
-})
-SilentSub:AddToggle({
-    Name = "Jitter", Default = true, Flag = "rv_jitter",
-    Callback = function(v) aim.jitter = v end,
 })
 
 local FovSub = AimTab:AddSubTab("FOV Circle")
@@ -388,7 +359,7 @@ track(RunService.RenderStepped:Connect(function()
         if targetLine then targetLine.Visible = false end
         return
     end
-    local t = GetTarget(false)
+    local t = sa.target
     if targetLine and hasDrawing then
         targetLine.Visible = aim.targetLine and t ~= nil
         if targetLine.Visible then
@@ -1582,7 +1553,6 @@ end
 -- CLEANUP / UNLOAD
 -- ══════════════════════════════════════════════════════════════════════════════
 local function Cleanup()
-    aim.enabled = false
     rage.enabled = false
     equipLoopAlive = false
     table.clear(deflecting)
