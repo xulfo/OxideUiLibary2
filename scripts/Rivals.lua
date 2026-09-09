@@ -47,6 +47,7 @@ local UserInputService  = game:GetService("UserInputService")
 local Workspace         = game:GetService("Workspace")
 local Lighting          = game:GetService("Lighting")
 local CollectionService = game:GetService("CollectionService")
+local HttpService       = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera      = Workspace.CurrentCamera
@@ -798,219 +799,379 @@ track(UserInputService.JumpRequest:Connect(function()
 end))
 
 -- ══════════════════════════════════════════════════════════════════════════════
--- UNLOCK ALL EMOTES (Player tab)
+-- UNLOCK ALL COSMETICS (Player tab) — skins / charms / dances / emotes / wraps
+-- Everything except Finishers, exactly like the user script. Consolidated into a
+-- single hook set (the original defines each hook 5x; only the last one wins).
 -- ══════════════════════════════════════════════════════════════════════════════
-local emotesEnabled = false
-local CosmeticLibrary, EmoteController, PlayerDataController
-local EmotesFolder
-local origOwnsCosmetic, origCanEmote, origUseEmoteByName
-local emoteConns = {}
-local isLocalEmoting = false
-local localEmoteObject = nil
-local currentLocalEmote = nil
-local runningEmoteConn = nil
-local previousCameraMode = nil
-local previousMinZoom = nil
-local hookedEntity = nil
-local oldEntityIsEmoting, oldEntityGetCurrentEmote
+local unlockEnabled = false
+local CosmeticLibrary, ItemLibrary, PlayerDataController
+local equipped = {}
+local favorites = {}
+local constructingWeapon, viewingProfile = nil, nil
+local lastUsedWeapon = nil
+local origOwnsCosmetic, origDataGet, origGetWeaponData
+local origNamecall
+local origCreateViewModel, origClientVMNew, origGetCharm, origGetWrap, origGetVMImage, origFetch
+local viewModelModule, ClientViewModel, ClientItem
+local unlockFile = "unlockall/config.json"
 
 do
     local ok1, cl = pcall(require, reps.Modules.CosmeticLibrary)
     if ok1 then CosmeticLibrary = cl end
-    local ok2, ec = pcall(require, LocalPlayer.PlayerScripts.Controllers.EmoteController)
-    if ok2 then EmoteController = ec end
+    local ok2, il = pcall(require, reps.Modules.ItemLibrary)
+    if ok2 then ItemLibrary = il end
     local ok3, pd = pcall(require, LocalPlayer.PlayerScripts.Controllers.PlayerDataController)
     if ok3 then PlayerDataController = pd end
-    EmotesFolder = reps.Modules:FindFirstChild("Emotes")
 end
 
-local function EmoteSafeFire(signal)
-    if not signal then return end
-    if type(signal) == "table" then
-        if type(signal.Fire) == "function" then pcall(function() signal:Fire() end)
-        elseif type(signal.fire) == "function" then pcall(function() signal:fire() end) end
-    elseif typeof(signal) == "Instance" and signal:IsA("BindableEvent") then
-        pcall(function() signal:Fire() end)
+local function UnlockIsUnlockable(cosmetic)
+    if not cosmetic then return false end
+    local t = cosmetic.Type or ""
+    local n = (cosmetic.Name or ""):lower()
+    if t == "Skin" or t == "Charm" or t == "Dance" or t == "Emote" or t == "Wrap" or t == "Wrapping" then
+        return true
     end
+    if n:find("charm") or n:find("dance") or n:find("emote") or n:find("wrap") then
+        return true
+    end
+    return false
 end
 
-local function StopLocalEmote()
-    if not isLocalEmoting then return end
-    isLocalEmoting = false
-    localEmoteObject = nil
+local function UnlockCloneCosmetic(name, cosmeticType, options)
+    local base = CosmeticLibrary and CosmeticLibrary.Cosmetics and CosmeticLibrary.Cosmetics[name]
+    if not base then return nil end
+    local data = {}
+    for key, value in pairs(base) do data[key] = value end
+    data.Name = name
+    data.Type = data.Type or cosmeticType
+    data.Seed = data.Seed or math.random(1, 1000000)
+    if options then
+        if options.inverted ~= nil then data.Inverted = options.inverted end
+        if options.favoritesOnly ~= nil then data.OnlyUseFavorites = options.favoritesOnly end
+    end
+    return data
+end
+
+local function UnlockSaveConfig()
+    if not writefile then return end
     pcall(function()
-        if previousCameraMode ~= nil then
-            LocalPlayer.CameraMode = previousCameraMode
-            previousCameraMode = nil
-        end
-        if previousMinZoom ~= nil then
-            LocalPlayer.CameraMinZoomDistance = previousMinZoom
-            previousMinZoom = nil
-        end
-    end)
-    local fighter = FighterController and FighterController:GetFighter(LocalPlayer)
-    local entity = fighter and fighter.Entity
-    if entity and entity.EmoteStatusChanged then
-        EmoteSafeFire(entity.EmoteStatusChanged)
-    end
-    if currentLocalEmote then
-        pcall(function() currentLocalEmote:Destroy() end)
-        currentLocalEmote = nil
-    end
-end
-
-local function SetupEmoteHumanoid(character)
-    if not character then return end
-    local humanoid = character:WaitForChild("Humanoid", 10)
-    if not humanoid then return end
-    if runningEmoteConn then
-        runningEmoteConn:Disconnect()
-        runningEmoteConn = nil
-    end
-    runningEmoteConn = humanoid.Running:Connect(function(speed)
-        if speed > 0.1 and isLocalEmoting then
-            StopLocalEmote()
-        end
-    end)
-end
-
-local function EmoteGetLocalEntity()
-    local fighter = FighterController and FighterController:GetFighter(LocalPlayer)
-    if fighter and fighter.IsLocalPlayer then
-        return fighter.Entity
-    end
-    return nil
-end
-
-local function EmoteHookEntity(entity)
-    if not entity then return end
-    if hookedEntity == entity then return end
-    if hookedEntity and hookedEntity ~= entity then
-        if hookedEntity and oldEntityIsEmoting then
-            pcall(function() hookedEntity.IsEmoting = oldEntityIsEmoting end)
-        end
-        if hookedEntity and oldEntityGetCurrentEmote then
-            pcall(function() hookedEntity.GetCurrentEmote = oldEntityGetCurrentEmote end)
-        end
-    end
-    hookedEntity = entity
-    oldEntityIsEmoting = entity.IsEmoting
-    oldEntityGetCurrentEmote = entity.GetCurrentEmote
-    entity.IsEmoting = function(self, ...)
-        if isLocalEmoting then return true end
-        return oldEntityIsEmoting(self, ...)
-    end
-    entity.GetCurrentEmote = function(self, ...)
-        if isLocalEmoting and localEmoteObject then return localEmoteObject end
-        return oldEntityGetCurrentEmote(self, ...)
-    end
-end
-
-local function EmoteUnhookEntity()
-    if hookedEntity then
-        if oldEntityIsEmoting then pcall(function() hookedEntity.IsEmoting = oldEntityIsEmoting end) end
-        if oldEntityGetCurrentEmote then pcall(function() hookedEntity.GetCurrentEmote = oldEntityGetCurrentEmote end) end
-    end
-    hookedEntity = nil
-    oldEntityIsEmoting = nil
-    oldEntityGetCurrentEmote = nil
-end
-
-local function ApplyEmotes(on)
-    if on then
-        if CosmeticLibrary and not origOwnsCosmetic then
-            origOwnsCosmetic = CosmeticLibrary.OwnsCosmetic
-            CosmeticLibrary.OwnsCosmetic = function(self, inventory, cosmeticName)
-                local cosmetic = CosmeticLibrary.Cosmetics and CosmeticLibrary.Cosmetics[cosmeticName]
-                if cosmetic and cosmetic.Type == "Emote" then return true end
-                return origOwnsCosmetic(self, inventory, cosmeticName)
-            end
-        end
-        if EmoteController and not origCanEmote then
-            origCanEmote = EmoteController.CanEmote
-            EmoteController.CanEmote = function(self, p2)
-                local ok, result = pcall(origCanEmote, self, p2)
-                if ok and result then return true end
-                local fighter = FighterController and FighterController:GetFighter(LocalPlayer)
-                if fighter and fighter.IsLocalPlayer and fighter:IsAlive() then
-                    local entity = fighter.Entity
-                    if entity and not entity:Get("IsFrozen") then return true end
+        local config = { equipped = {}, favorites = favorites }
+        for weapon, cosmetics in pairs(equipped) do
+            config.equipped[weapon] = {}
+            for cosmeticType, cosmeticData in pairs(cosmetics) do
+                if cosmeticData and cosmeticData.Name then
+                    config.equipped[weapon][cosmeticType] = {
+                        name = cosmeticData.Name,
+                        seed = cosmeticData.Seed,
+                        inverted = cosmeticData.Inverted,
+                    }
                 end
-                return false
             end
         end
-        if EmoteController and not origUseEmoteByName then
-            origUseEmoteByName = EmoteController.UseEmoteByName
-            EmoteController.UseEmoteByName = function(self, emoteName)
-                StopLocalEmote()
-                local ownsEmote = origOwnsCosmetic and origOwnsCosmetic(CosmeticLibrary, PlayerDataController and PlayerDataController:Get("CosmeticInventory"), emoteName) or false
-                pcall(function() origUseEmoteByName(self, emoteName) end)
-                if not ownsEmote then
-                    task.spawn(function()
-                        local emoteModule = EmotesFolder and EmotesFolder:FindFirstChild(emoteName)
-                        local character = LocalPlayer.Character
-                        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-                        if emoteModule and humanoid then
-                            task.wait(0.1)
-                            pcall(function()
-                                currentLocalEmote = require(emoteModule).new(humanoid)
-                                previousCameraMode = LocalPlayer.CameraMode
-                                previousMinZoom = LocalPlayer.CameraMinZoomDistance
-                                LocalPlayer.CameraMode = Enum.CameraMode.Classic
-                                LocalPlayer.CameraMinZoomDistance = 8
-                                isLocalEmoting = true
-                                localEmoteObject = currentLocalEmote
-                                local entity = EmoteGetLocalEntity()
-                                if entity then
-                                    EmoteHookEntity(entity)
-                                    if entity.EmoteStatusChanged then
-                                        EmoteSafeFire(entity.EmoteStatusChanged)
-                                    end
-                                end
-                                task.defer(currentLocalEmote.Simulate, currentLocalEmote)
-                                currentLocalEmote.Destroying:Wait()
-                                if isLocalEmoting then StopLocalEmote() end
-                                EmoteUnhookEntity()
+        makefolder("unlockall")
+        writefile(unlockFile, HttpService:JSONEncode(config))
+    end)
+end
+
+local function UnlockLoadConfig()
+    if not readfile or not isfile or not isfile(unlockFile) then return end
+    pcall(function()
+        local config = HttpService:JSONDecode(readfile(unlockFile))
+        if config.equipped then
+            for weapon, cosmetics in pairs(config.equipped) do
+                equipped[weapon] = {}
+                for cosmeticType, cosmeticData in pairs(cosmetics) do
+                    local cloned = UnlockCloneCosmetic(cosmeticData.name, cosmeticType, { inverted = cosmeticData.inverted })
+                    if cloned then
+                        cloned.Seed = cosmeticData.seed
+                        equipped[weapon][cosmeticType] = cloned
+                    end
+                end
+            end
+        end
+        favorites = config.favorites or {}
+    end)
+end
+
+local function UnlockApplyViewmodelCosmetics(replicatedData, weaponName, weaponPlayer)
+    if weaponPlayer == LocalPlayer and equipped[weaponName] then
+        local ReplicatedClass = require(reps.Modules.ReplicatedClass)
+        local dataKey = ReplicatedClass:ToEnum("Data")
+        replicatedData[dataKey] = replicatedData[dataKey] or {}
+        local cosmetics = equipped[weaponName]
+        if cosmetics.Skin then replicatedData[dataKey][ReplicatedClass:ToEnum("Skin")] = cosmetics.Skin end
+        if cosmetics.Charm then replicatedData[dataKey][ReplicatedClass:ToEnum("Charm")] = cosmetics.Charm end
+        if cosmetics.Wrap then replicatedData[dataKey][ReplicatedClass:ToEnum("Wrap")] = cosmetics.Wrap end
+    end
+end
+
+local function ApplyUnlockAll(on)
+    if on then
+        if not (CosmeticLibrary and ItemLibrary and PlayerDataController) then
+            Notify("Unlock All", "Cosmetic modules not found", "Error", 3.5)
+            return
+        end
+
+        -- OwnsCosmetic: every Skin/Charm/Dance/Emote/Wrap is owned (no Finishers)
+        if not origOwnsCosmetic then
+            origOwnsCosmetic = CosmeticLibrary.OwnsCosmetic
+            CosmeticLibrary.OwnsCosmetic = function(self, inventory, name, weapon)
+                if name:find("MISSING_") then return origOwnsCosmetic(self, inventory, name, weapon) end
+                local cosmetic = CosmeticLibrary.Cosmetics and CosmeticLibrary.Cosmetics[name]
+                if UnlockIsUnlockable(cosmetic) then return true end
+                return origOwnsCosmetic(self, inventory, name, weapon)
+            end
+        end
+
+        -- DataController.Get: inventory reports every unlockable cosmetic owned
+        if not origDataGet then
+            origDataGet = PlayerDataController.Get
+            PlayerDataController.Get = function(self, key)
+                local data = origDataGet(self, key)
+                if key == "CosmeticInventory" then
+                    local proxy = {}
+                    if data then
+                        for k, v in pairs(data) do
+                            local cosmetic = CosmeticLibrary.Cosmetics and CosmeticLibrary.Cosmetics[k]
+                            if UnlockIsUnlockable(cosmetic) then proxy[k] = v end
+                        end
+                    end
+                    return setmetatable(proxy, { __index = function(t, k)
+                        local cosmetic = CosmeticLibrary.Cosmetics and CosmeticLibrary.Cosmetics[k]
+                        if UnlockIsUnlockable(cosmetic) then return true end
+                        return nil
+                    end })
+                end
+                if key == "FavoritedCosmetics" then
+                    local result = data and table.clone(data) or {}
+                    for weapon, favs in pairs(favorites) do
+                        result[weapon] = result[weapon] or {}
+                        for name, isFav in pairs(favs) do
+                            local cosmetic = CosmeticLibrary.Cosmetics and CosmeticLibrary.Cosmetics[name]
+                            if UnlockIsUnlockable(cosmetic) then result[weapon][name] = isFav end
+                        end
+                    end
+                    return result
+                end
+                return data
+            end
+        end
+
+        -- GetWeaponData: merge equipped Skin/Charm/Wrap into the weapon data
+        if not origGetWeaponData then
+            origGetWeaponData = PlayerDataController.GetWeaponData
+            PlayerDataController.GetWeaponData = function(self, weaponName)
+                local data = origGetWeaponData(self, weaponName)
+                if not data then return nil end
+                local merged = {}
+                for key, value in pairs(data) do merged[key] = value end
+                merged.Name = weaponName
+                if equipped[weaponName] then
+                    for cosmeticType, cosmeticData in pairs(equipped[weaponName]) do
+                        if cosmeticType == "Skin" or cosmeticType == "Charm" or cosmeticType == "Wrap" or cosmeticType == "Wrapping" then
+                            merged[cosmeticType] = cosmeticData
+                        end
+                    end
+                end
+                return merged
+            end
+        end
+
+        -- EquipCosmetic / FavoriteCosmetic remotes: store equipped cosmetics locally
+        if not origNamecall and hookmetamethod and getnamecallmethod then
+            local remotes = reps.Remotes
+            local dataRemotes = remotes and remotes:FindFirstChild("Data")
+            local equipRemote = dataRemotes and dataRemotes:FindFirstChild("EquipCosmetic")
+            local favoriteRemote = dataRemotes and dataRemotes:FindFirstChild("FavoriteCosmetic")
+            if equipRemote then
+                origNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+                    if getnamecallmethod() ~= "FireServer" then return origNamecall(self, ...) end
+                    local args = { ... }
+                    if self == equipRemote then
+                        local weaponName, cosmeticType, cosmeticName, options = args[1], args[2], args[3], args[4] or {}
+                        local cosmetic = CosmeticLibrary.Cosmetics and CosmeticLibrary.Cosmetics[cosmeticName]
+                        if not UnlockIsUnlockable(cosmetic) then return origNamecall(self, ...) end
+                        if cosmeticName and cosmeticName ~= "None" and cosmeticName ~= "" then
+                            local inventory = PlayerDataController:Get("CosmeticInventory")
+                            if inventory and rawget(inventory, cosmeticName) then return origNamecall(self, ...) end
+                        end
+                        if cosmeticType == "Dance" or cosmeticType == "Emote" then
+                            equipped.Dances = equipped.Dances or {}
+                            if not cosmeticName or cosmeticName == "None" or cosmeticName == "" then
+                                equipped.Dances[cosmeticType] = nil
+                            else
+                                local cloned = UnlockCloneCosmetic(cosmeticName, cosmeticType, { inverted = options.IsInverted, favoritesOnly = options.OnlyUseFavorites })
+                                if cloned then equipped.Dances[cosmeticType] = cloned end
+                            end
+                            task.defer(function()
+                                pcall(function() PlayerDataController.CurrentData:Replicate("CosmeticInventory") end)
+                                task.wait(0.2)
+                                UnlockSaveConfig()
+                            end)
+                        else
+                            equipped[weaponName] = equipped[weaponName] or {}
+                            if not cosmeticName or cosmeticName == "None" or cosmeticName == "" then
+                                equipped[weaponName][cosmeticType] = nil
+                                if not next(equipped[weaponName]) then equipped[weaponName] = nil end
+                            else
+                                local cloned = UnlockCloneCosmetic(cosmeticName, cosmeticType, { inverted = options.IsInverted, favoritesOnly = options.OnlyUseFavorites })
+                                if cloned then equipped[weaponName][cosmeticType] = cloned end
+                            end
+                            task.defer(function()
+                                pcall(function() PlayerDataController.CurrentData:Replicate("WeaponInventory") end)
+                                task.wait(0.2)
+                                UnlockSaveConfig()
                             end)
                         end
-                    end)
+                        return
+                    end
+                    if self == favoriteRemote then
+                        local cosmetic = CosmeticLibrary.Cosmetics and CosmeticLibrary.Cosmetics[args[2]]
+                        if UnlockIsUnlockable(cosmetic) then
+                            favorites[args[1]] = favorites[args[1]] or {}
+                            favorites[args[1]][args[2]] = args[3] or nil
+                            UnlockSaveConfig()
+                            task.spawn(function() pcall(function() PlayerDataController.CurrentData:Replicate("FavoritedCosmetics") end) end)
+                        end
+                        return
+                    end
+                    return origNamecall(self, ...)
+                end)
+            end
+        end
+
+        -- ClientItem._CreateViewModel: inject the equipped cosmetic into the viewmodel ref
+        pcall(function() ClientItem = require(LocalPlayer.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem) end)
+        if ClientItem and ClientItem._CreateViewModel and not origCreateViewModel then
+            origCreateViewModel = ClientItem._CreateViewModel
+            ClientItem._CreateViewModel = function(self, viewmodelRef)
+                local weaponName = self.Name
+                local weaponPlayer = self.ClientFighter and self.ClientFighter.Player
+                constructingWeapon = (weaponPlayer == LocalPlayer) and weaponName or nil
+                if weaponPlayer == LocalPlayer and equipped[weaponName] and viewmodelRef then
+                    local dataKey, skinKey, nameKey = self:ToEnum("Data"), self:ToEnum("Skin"), self:ToEnum("Name")
+                    if viewmodelRef[dataKey] then
+                        if equipped[weaponName].Skin then
+                            viewmodelRef[dataKey][skinKey] = equipped[weaponName].Skin
+                            viewmodelRef[dataKey][nameKey] = equipped[weaponName].Skin.Name
+                        end
+                    elseif viewmodelRef.Data then
+                        if equipped[weaponName].Skin then
+                            viewmodelRef.Data.Skin = equipped[weaponName].Skin
+                            viewmodelRef.Data.Name = equipped[weaponName].Skin.Name
+                        end
+                    end
+                end
+                local result = origCreateViewModel(self, viewmodelRef)
+                constructingWeapon = nil
+                return result
+            end
+        end
+
+        -- ClientViewModel: new() + GetCharm/GetWrap getters apply equipped cosmetics
+        viewModelModule = LocalPlayer.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem:FindFirstChild("ClientViewModel")
+        if viewModelModule then
+            ClientViewModel = require(viewModelModule)
+            if not origClientVMNew then
+                origClientVMNew = ClientViewModel.new
+                ClientViewModel.new = function(replicatedData, clientItem)
+                    local weaponPlayer = clientItem.ClientFighter and clientItem.ClientFighter.Player
+                    local weaponName = constructingWeapon or clientItem.Name
+                    UnlockApplyViewmodelCosmetics(replicatedData, weaponName, weaponPlayer)
+                    local result = origClientVMNew(replicatedData, clientItem)
+                    if weaponPlayer == LocalPlayer and equipped[weaponName] and equipped[weaponName].Wrap and result._UpdateWrap then
+                        result:_UpdateWrap()
+                        task.delay(0.1, function() if not result._destroyed then result:_UpdateWrap() end end)
+                    end
+                    return result
+                end
+            end
+            if not origGetCharm and ClientViewModel.GetCharm then
+                origGetCharm = ClientViewModel.GetCharm
+                ClientViewModel.GetCharm = function(self)
+                    local weaponName = self.ClientItem and self.ClientItem.Name
+                    local weaponPlayer = self.ClientItem and self.ClientItem.ClientFighter and self.ClientItem.ClientFighter.Player
+                    if weaponName and weaponPlayer == LocalPlayer and equipped[weaponName] and equipped[weaponName].Charm then
+                        return equipped[weaponName].Charm
+                    end
+                    return origGetCharm(self)
+                end
+            end
+            if not origGetWrap and ClientViewModel.GetWrap then
+                origGetWrap = ClientViewModel.GetWrap
+                ClientViewModel.GetWrap = function(self)
+                    local weaponName = self.ClientItem and self.ClientItem.Name
+                    local weaponPlayer = self.ClientItem and self.ClientItem.ClientFighter and self.ClientItem.ClientFighter.Player
+                    if weaponName and weaponPlayer == LocalPlayer and equipped[weaponName] and equipped[weaponName].Wrap then
+                        return equipped[weaponName].Wrap
+                    end
+                    return origGetWrap(self)
                 end
             end
         end
-        table.insert(emoteConns, LocalPlayer.CharacterAdded:Connect(function(character)
-            StopLocalEmote()
-            SetupEmoteHumanoid(character)
-        end))
-        SetupEmoteHumanoid(LocalPlayer.Character)
+
+        -- ItemLibrary: show the equipped skin image (also on your profile page)
+        if ItemLibrary and ItemLibrary.GetViewModelImageFromWeaponData and not origGetVMImage then
+            origGetVMImage = ItemLibrary.GetViewModelImageFromWeaponData
+            ItemLibrary.GetViewModelImageFromWeaponData = function(self, weaponData, highRes)
+                if not weaponData then return origGetVMImage(self, weaponData, highRes) end
+                local weaponName = weaponData.Name
+                local shouldShowSkin = (weaponData.Skin and equipped[weaponName] and weaponData.Skin == equipped[weaponName].Skin) or (viewingProfile == LocalPlayer and equipped[weaponName] and equipped[weaponName].Skin)
+                if shouldShowSkin and equipped[weaponName] and equipped[weaponName].Skin then
+                    local skinInfo = self.ViewModels and self.ViewModels[equipped[weaponName].Skin.Name]
+                    if skinInfo then return skinInfo[highRes and "ImageHighResolution" or "Image"] or skinInfo.Image end
+                end
+                return origGetVMImage(self, weaponData, highRes)
+            end
+        end
+
+        -- ViewProfile: track when your profile is open so skins show there too
+        pcall(function()
+            local ViewProfile = require(LocalPlayer.PlayerScripts.Modules.Pages.ViewProfile)
+            if ViewProfile and ViewProfile.Fetch and not origFetch then
+                origFetch = ViewProfile.Fetch
+                ViewProfile.Fetch = function(self, targetPlayer)
+                    viewingProfile = targetPlayer
+                    return origFetch(self, targetPlayer)
+                end
+            end
+        end)
+
+        UnlockLoadConfig()
     else
-        StopLocalEmote()
-        EmoteUnhookEntity()
-        if runningEmoteConn then runningEmoteConn:Disconnect(); runningEmoteConn = nil end
-        for _, c in ipairs(emoteConns) do pcall(function() c:Disconnect() end) end
-        table.clear(emoteConns)
         if CosmeticLibrary and origOwnsCosmetic then pcall(function() CosmeticLibrary.OwnsCosmetic = origOwnsCosmetic end); origOwnsCosmetic = nil end
-        if EmoteController and origCanEmote then pcall(function() EmoteController.CanEmote = origCanEmote end); origCanEmote = nil end
-        if EmoteController and origUseEmoteByName then pcall(function() EmoteController.UseEmoteByName = origUseEmoteByName end); origUseEmoteByName = nil end
+        if PlayerDataController and origDataGet then pcall(function() PlayerDataController.Get = origDataGet end); origDataGet = nil end
+        if PlayerDataController and origGetWeaponData then pcall(function() PlayerDataController.GetWeaponData = origGetWeaponData end); origGetWeaponData = nil end
+        if origNamecall then pcall(function() hookmetamethod(game, "__namecall", origNamecall) end); origNamecall = nil end
+        if ClientItem and origCreateViewModel then pcall(function() ClientItem._CreateViewModel = origCreateViewModel end); origCreateViewModel = nil end
+        if ClientViewModel and origClientVMNew then pcall(function() ClientViewModel.new = origClientVMNew end); origClientVMNew = nil end
+        if ClientViewModel and origGetCharm then pcall(function() ClientViewModel.GetCharm = origGetCharm end); origGetCharm = nil end
+        if ClientViewModel and origGetWrap then pcall(function() ClientViewModel.GetWrap = origGetWrap end); origGetWrap = nil end
+        if ItemLibrary and origGetVMImage then pcall(function() ItemLibrary.GetViewModelImageFromWeaponData = origGetVMImage end); origGetVMImage = nil end
+        if origFetch then
+            pcall(function()
+                local ViewProfile = require(LocalPlayer.PlayerScripts.Modules.Pages.ViewProfile)
+                if ViewProfile then ViewProfile.Fetch = origFetch end
+            end)
+            origFetch = nil
+        end
+        ClientItem, ClientViewModel, viewModelModule = nil, nil, nil
     end
 end
 
-local EmoteSub = PlayerTab:AddSubTab("Emotes")
-EmoteSub:AddSection("Unlock All Emotes")
-EmoteSub:AddToggle({
-    Name = "Unlock All Emotes", Default = false, Flag = "rv_emotes",
+local UnlockSub = PlayerTab:AddSubTab("Unlock All")
+UnlockSub:AddSection("Unlock All Cosmetics")
+UnlockSub:AddToggle({
+    Name = "Unlock All Cosmetics", Default = false, Flag = "rv_unlockall",
     Callback = function(v)
-        emotesEnabled = v
-        ApplyEmotes(v)
-        if v and not (CosmeticLibrary and EmoteController) then
-            Notify("Emotes", "Cosmetic/Emote modules not found", "Error", 3.5)
+        unlockEnabled = v
+        ApplyUnlockAll(v)
+        if v and not (CosmeticLibrary and ItemLibrary and PlayerDataController) then
+            Notify("Unlock All", "Cosmetic modules not found", "Error", 3.5)
         else
-            Notify("Emotes", v and "All emotes unlocked" or "Emotes off", v and "Success" or "Error")
+            Notify("Unlock All", v and "All cosmetics unlocked (no Finishers)" or "Unlock All off", v and "Success" or "Error")
         end
     end,
-})
-EmoteSub:AddParagraph({
-    Title = "How it works",
-    Text = "Spoofs OwnsCosmetic + CanEmote and simulates unowned emotes locally so they play for you. Open your emote wheel and pick anything.",
 })
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -1280,7 +1441,7 @@ local function Cleanup()
     pcall(function() runSR:UnbindFromRenderStep("OxideRageRestore") end)
     noSpreadEnabled = false; ApplyNoSpread(false)
     rapidHitEnabled = false
-    emotesEnabled = false; ApplyEmotes(false)
+    unlockEnabled = false; ApplyUnlockAll(false)
     spoofLoopAlive = false
     for _, c in ipairs(spoofConns) do pcall(function() c:Disconnect() end) end
     table.clear(spoofConns)
