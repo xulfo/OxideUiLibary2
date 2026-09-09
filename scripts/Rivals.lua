@@ -144,22 +144,15 @@ end)
 table.insert(HUB.conns, fovRenderConn)
 
 -- ── Target acquisition ────────────────────────────────────────────────────
-local function IsEnemy(plr)
-    if plr == LocalPlayer then return false end
-    local c = plr.Character
-    if not c then return false end
-    local hum = c:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-    if aim.teamCheck and plr.Team and LocalPlayer.Team and plr.Team == LocalPlayer.Team then return false end
-    return true
-end
-
+-- Matches the verified working approach: any Entity-tagged model except our
+-- own character, hit part found RECURSIVELY (RIVALS rig parts are nested),
+-- closest to the FOV reference point wins.
 local function PickHitPart(char)
     local want = aim.hitPart
     if want == "Random" then
         want = (math.random() > 0.5) and "Head" or "HumanoidRootPart"
     end
-    local part = char:FindFirstChild(want) or char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
+    local part = char:FindFirstChild(want, true) or char:FindFirstChild("HumanoidRootPart", true) or char:FindFirstChild("Head", true)
     if part and part:IsA("BasePart") then return part end
     return nil
 end
@@ -183,11 +176,16 @@ local function GetTarget()
     local ref = aim.useMouseCenter and UserInputService:GetMouseLocation() or center
     local bestPart, bestDist = nil, aim.fov
     for _, ent in ipairs(CollectionService:GetTagged("Entity")) do
-        if ent:IsA("Model") and ent ~= LocalPlayer.Character then
-            local plr = Players:GetPlayerFromCharacter(ent)
-            if plr and IsEnemy(plr) then
-                local part = PickHitPart(ent)
-                if part and IsVisible(part) then
+        if ent ~= LocalPlayer.Character then
+            local part = PickHitPart(ent)
+            if part and IsVisible(part) then
+                -- optional team filter: only skips when both sides actually have teams
+                local skip = false
+                if aim.teamCheck then
+                    local plr = Players:GetPlayerFromCharacter(ent)
+                    if plr and plr.Team and LocalPlayer.Team and plr.Team == LocalPlayer.Team then skip = true end
+                end
+                if not skip then
                     local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
                     if onScreen and sp.Z > 0 then
                         local d = (Vector2.new(sp.X, sp.Y) - ref).Magnitude
@@ -232,19 +230,20 @@ local function InstallHooks()
             return originalRaycastHook(self, envID, params, origin, dir, maxDist, ...)
         end
     end
-    -- 2. Spoof cam data on the UseItem remote so shots count as on-target
+    -- 2. Spoof cam data on the UseItem remote so shots count as on-target.
+    --    MUST use hookfunction: a plain `UseItem.FireServer = fn` assignment
+    --    is a no-op on RemoteEvent methods.
     if UseItem and type(UseItem.FireServer) == "function" then
         originalFireServer = UseItem.FireServer
         local fire = originalFireServer
-        local wrap = newcclosure or function(fn) return fn end
-        UseItem.FireServer = wrap(function(self, objID, enumVal, camdata, extra)
+        UseItem.FireServer = hookfunction(UseItem.FireServer, newcclosure(function(self, objID, enumVal, camdata, extra)
             if aim.enabled and enumVal == enumStartShooting then
-                local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart", true)
                 local t = GetTarget()
                 if root and t then camdata = MakeCamData(root.Position, t) end
             end
             return fire(self, objID, enumVal, camdata, extra)
-        end)
+        end))
     end
     -- 3. Always "fully aiming" while the hub is up
     if GunMod and type(GunMod.IsFullyAiming) == "function" then
@@ -261,7 +260,7 @@ local function UninstallHooks()
         originalRaycastHook = nil
     end
     if UseItem and originalFireServer then
-        pcall(function() UseItem.FireServer = originalFireServer end)
+        pcall(function() UseItem.FireServer = hookfunction(UseItem.FireServer, originalFireServer) end)
         originalFireServer = nil
     end
     if GunMod and originalIsFullyAiming then
