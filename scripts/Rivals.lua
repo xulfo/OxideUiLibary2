@@ -641,7 +641,7 @@ local function GetPlayerBox(plr)
         o.corners = {}
         for i = 1, 8 do o.corners[i] = newDrawing("Line", { Thickness = 1, Visible = false, Color = Color3.new(1, 1, 1) }) end
         o.skel = {}
-        for i = 1, 11 do o.skel[i] = newDrawing("Line", { Thickness = 1.2, Visible = false }) end
+        for i = 1, 14 do o.skel[i] = newDrawing("Line", { Thickness = 1.2, Visible = false }) end
         o.offscreen = newDrawing("Line", { Thickness = 1.5, Visible = false })
     end
     playerObjects[plr] = o
@@ -649,7 +649,7 @@ local function GetPlayerBox(plr)
 end
 
 local R15_BONES = {
-    { "Head", "Neck" }, { "Neck", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
+    { "Head", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
     { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
     { "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
     { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
@@ -843,15 +843,20 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
                                 for i, bonePair in ipairs(pairs) do
                                     local a = char:FindFirstChild(bonePair[1], true)
                                     local b = char:FindFirstChild(bonePair[2], true)
-                                    local l = o.skel[i]
-                                    if a and b and l then
-                                        local sa, oa = Camera:WorldToViewportPoint(a.Position)
-                                        local sb, ob = Camera:WorldToViewportPoint(b.Position)
-                                        if oa and ob and sa.Z > 0 and sb.Z > 0 then
-                                            l.Visible = true
-                                            l.Color = skelColor
-                                            l.From = Vector2.new(sa.X, sa.Y)
-                                            l.To = Vector2.new(sb.X, sb.Y)
+                                    if a and not a:IsA("BasePart") then a = nil end
+                                    if b and not b:IsA("BasePart") then b = nil end
+                                    if a and b then
+                                        local pa, pb = a.Position, b.Position
+                                        local l = o.skel[i]
+                                        if l then
+                                            local okA, sa, oa = pcall(function() return Camera:WorldToViewportPoint(pa) end)
+                                            local okB, sb, ob = pcall(function() return Camera:WorldToViewportPoint(pb) end)
+                                            if okA and okB and oa and ob and sa.Z > 0 and sb.Z > 0 then
+                                                l.Visible = true
+                                                l.Color = skelColor
+                                                l.From = Vector2.new(sa.X, sa.Y)
+                                                l.To = Vector2.new(sb.X, sb.Y)
+                                            end
                                         end
                                     end
                                 end
