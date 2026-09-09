@@ -111,6 +111,20 @@ local aim = {
     targetLineColor = Color3.fromRGB(120, 200, 255),
 }
 
+-- Ragebot config (declared before the hooks because the UseItem hook closure
+-- needs to skip cam-data overrides while the ragebot is driving its own shots).
+local rage = {
+    enabled = false,
+    fireRate = 0.0005,
+    weaponSlot = "Melee", -- Primary / Secondary / Melee
+    maxDist = 500,
+    teamCheck = true,
+    deflectCheck = true,
+    desync = true,
+    knifeAdjust = true,
+    randomOffset = true,
+}
+
 -- ── FOV circle ────────────────────────────────────────────────────────────
 local fovCircle = hasDrawing and newDrawing("Circle", {
     Thickness = 1.5, NumSides = 64, Radius = 180, Filled = false,
@@ -255,7 +269,8 @@ local function InstallHooks()
         originalFireServer = UseItem.FireServer
         local fire = originalFireServer
         UseItem.FireServer = hookfunction(UseItem.FireServer, newcclosure(function(self, objID, enumVal, camdata, extra)
-            if aim.enabled and enumVal == enumStartShooting then
+            -- Ragebot drives its own camdata + desync; let its shots pass through untouched.
+            if aim.enabled and not rage.enabled and enumVal == enumStartShooting then
                 local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart", true)
                 local t = GetTarget()
                 if root and t then camdata = MakeCamData(root.Position, t) end
@@ -401,6 +416,391 @@ track(RunService.RenderStepped:Connect(function()
         targetStatus:Set("Target: " .. name)
     end
 end))
+
+-- ── No Spread ───────────────────────────────────────────────────────────
+local noSpreadEnabled = false
+local origIsFullyAiming
+local function ApplyNoSpread(on)
+    if on then
+        if GunMod and type(GunMod.IsFullyAiming) == "function" then
+            if not origIsFullyAiming then origIsFullyAiming = GunMod.IsFullyAiming end
+            GunMod.IsFullyAiming = function() return true end
+        end
+    else
+        if origIsFullyAiming then
+            pcall(function() GunMod.IsFullyAiming = origIsFullyAiming end)
+            origIsFullyAiming = nil
+        end
+    end
+end
+
+local NoSpreadSub = AimTab:AddSubTab("No Spread")
+NoSpreadSub:AddSection("No Spread")
+NoSpreadSub:AddToggle({
+    Name = "No Spread", Default = false, Flag = "rv_nospread",
+    Description = "Forces Gun.IsFullyAiming to always return true (perfect accuracy)",
+    Callback = function(v)
+        noSpreadEnabled = v
+        ApplyNoSpread(v)
+        Notify("Aim", v and "No Spread ON" or "No Spread OFF", v and "Success" or "Error")
+    end,
+})
+NoSpreadSub:AddParagraph({
+    Title = "Note",
+    Text = "This is the same IsFullyAiming patch the silent aim uses. It's safe to run both — the toggle just gives you the spread removal on its own.",
+})
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- RAGE TAB (Ragebot — desync auto-fire)
+-- ══════════════════════════════════════════════════════════════════════════════
+local RageTab = Window:AddTab({ Name = "Rage", Subtitle = "Ragebot & desync", Icon = "bolt" })
+
+-- cloneref'd services (anti-cheat safe). Fall back to plain services if the
+-- executor has no cloneref.
+local function CloneSvc(svc)
+    if type(cloneref) == "function" then
+        local ok, c = pcall(cloneref, svc)
+        if ok and c then return c end
+    end
+    return svc
+end
+local repS  = CloneSvc(ReplicatedStorage)
+local plrsR = CloneSvc(Players)
+local runSR = CloneSvc(RunService)
+local wsR   = CloneSvc(Workspace)
+local uisR  = CloneSvc(UserInputService)
+
+-- Controllers used by the ragebot (guarded so the hub still loads if a path changes)
+local FighterController, SpectateController
+local RageUtil, RageEnum
+local UseItemR
+local rageReady = false
+do
+    local ok1, fc = pcall(require, LocalPlayer.PlayerScripts.Controllers.FighterController)
+    if ok1 then FighterController = fc end
+    local ok2, sc = pcall(require, LocalPlayer.PlayerScripts.Controllers:WaitForChild("SpectateController"))
+    if ok2 then SpectateController = sc end
+    local ok3, u = pcall(require, repS.Modules.Utility)
+    if ok3 then RageUtil = u end
+    local ok4, el = pcall(require, repS.Modules.EnumLibrary)
+    if ok4 then RageEnum = el end
+    local fighter = repS.Remotes and repS.Remotes.Replication and repS.Remotes.Replication.Fighter
+    if fighter then UseItemR = fighter:FindFirstChild("UseItem") end
+    rageReady = FighterController ~= nil and SpectateController ~= nil
+        and RageUtil ~= nil and RageEnum ~= nil and UseItemR ~= nil
+end
+
+local SLOT_NUM = { Primary = 1, Secondary = 2, Melee = 3 }
+
+-- Equip keep-alive: keeps the chosen slot equipped while the ragebot is on
+local equipLoopAlive = true
+local equipThread = task.spawn(function()
+    while equipLoopAlive do
+        task.wait(1)
+        if rage.enabled and FighterController then
+            local lf = FighterController.LocalFighter
+            if lf then
+                pcall(function() lf:EquipItem(SLOT_NUM[rage.weaponSlot] or 3) end)
+            end
+        end
+    end
+end)
+
+-- Deflection tracking (katana parry awareness)
+local deflecting = {}
+local playerRemoveConn = plrsR.PlayerRemoving:Connect(function(player)
+    deflecting[player] = nil
+end)
+table.insert(HUB.conns, playerRemoveConn)
+
+local function UpdateDeflection()
+    if not FighterController or not FighterController.Objects then return end
+    for _, fighterObj in FighterController.Objects do
+        local player = fighterObj.Player
+        if player then
+            if not fighterObj.Entity or not fighterObj.Entity:IsAlive() or fighterObj:Get("IsSpectating") then
+                deflecting[player] = false
+            else
+                local equipped = fighterObj.EquippedItem
+                local isKatana = equipped and equipped.ViewModel and equipped.ViewModel.Name == "Katana"
+                local isDeflecting = false
+                if isKatana then
+                    isDeflecting = (equipped._attack_cooldown and equipped._attack_cooldown > tick()) or false
+                end
+                deflecting[player] = isDeflecting
+            end
+        end
+    end
+end
+
+local function IsEnemyR(player)
+    if player == LocalPlayer then return false end
+    if not rage.teamCheck then return true end
+    -- Duel-based team resolution
+    if SpectateController and SpectateController.CurrentDuelSubject then
+        local duel = SpectateController.CurrentDuelSubject
+        local localDueler = duel and duel:GetDueler(LocalPlayer)
+        local localTeam = localDueler and localDueler:Get("TeamID") or nil
+        if localTeam and duel and duel.Duelers then
+            for _, dueler in duel.Duelers do
+                if dueler.Player == player then
+                    local team = dueler:Get("TeamID")
+                    return team ~= localTeam
+                end
+            end
+        end
+    end
+    local pTeam = player:GetAttribute("TeamID")
+    local lTeam = LocalPlayer:GetAttribute("TeamID")
+    if pTeam and lTeam then
+        return pTeam ~= lTeam
+    end
+    return true
+end
+
+local function GetClosestTargetR()
+    local char = LocalPlayer.Character
+    if not char then return nil, nil, nil end
+    local myRoot = char:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil, nil, nil end
+    local closestPlayer, closestRoot, closestHead
+    local closestDist = rage.maxDist
+    for _, player in plrsR:GetPlayers() do
+        if IsEnemyR(player) then
+            local pChar = player.Character
+            if pChar then
+                local pRoot = pChar:FindFirstChild("HumanoidRootPart")
+                local pHead = pChar:FindFirstChild("Head")
+                local pHum = pChar:FindFirstChildOfClass("Humanoid")
+                if pRoot and pHead and pHum and pHum.Health > 0 then
+                    local dist = (myRoot.Position - pRoot.Position).Magnitude
+                    if dist < closestDist then
+                        closestDist = dist
+                        closestPlayer = player
+                        closestRoot = pRoot
+                        closestHead = pHead
+                    end
+                end
+            end
+        end
+    end
+    return closestPlayer, closestRoot, closestHead
+end
+
+local function HasKnifeViewModel(targetPlayer)
+    if not targetPlayer then return false end
+    local viewModels = wsR:FindFirstChild("ViewModels")
+    if not viewModels then return false end
+    local targetName = targetPlayer.Name
+    for _, model in viewModels:GetChildren() do
+        if model:IsA("Model")
+            and string.find(model.Name, targetName, 1, true)
+            and string.find(model.Name, "Knife", 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local lastFire = 0
+local rageConn = runSR.Heartbeat:Connect(function()
+    if HUB.dead then return end
+    if not rage.enabled then
+        -- keep deflection map fresh anyway (cheap) but skip everything else
+        return
+    end
+    UpdateDeflection()
+    local targetPlayer, targetRoot, targetHead = GetClosestTargetR()
+    local desyncCF = nil
+
+    if rage.desync and targetRoot and targetHead then
+        local desyncPos
+        if rage.knifeAdjust and HasKnifeViewModel(targetPlayer) then
+            desyncPos = (targetRoot.CFrame * CFrame.new(0, 6, 0)).Position
+        else
+            desyncPos = (targetRoot.CFrame * CFrame.new(0, 1, 2)).Position
+        end
+        desyncCF = CFrame.lookAt(desyncPos, targetHead.Position)
+    end
+
+    if rage.desync and desyncCF and LocalPlayer.Character then
+        local myRoot = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if myRoot then
+            local oldCF = myRoot.CFrame
+            local oldVel = myRoot.Velocity
+            local oldRotVel = myRoot.RotVelocity
+            myRoot.CFrame = desyncCF
+            runSR:BindToRenderStep("OxideRageRestore", 101, function()
+                if myRoot and myRoot.Parent then
+                    myRoot.CFrame = oldCF
+                    myRoot.Velocity = oldVel
+                    myRoot.RotVelocity = oldRotVel
+                end
+                runSR:UnbindFromRenderStep("OxideRageRestore")
+            end)
+        end
+    end
+
+    if not targetPlayer or not targetHead or not targetRoot then return end
+    if rage.deflectCheck and deflecting[targetPlayer] then return end
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    if not FighterController or not FighterController.LocalFighter then return end
+    local item = FighterController.LocalFighter.EquippedItem
+    if not item then return end
+    if tick() - lastFire < rage.fireRate then return end
+    lastFire = tick()
+
+    local originPos = desyncCF and desyncCF.Position or targetRoot.Position
+    local targetPos = targetHead.Position
+    local aimCF = CFrame.lookAt(originPos, targetPos)
+    local targetCF = targetHead.CFrame
+    local aimedPos = targetPos
+    if rage.randomOffset then
+        aimedPos = targetPos + Vector3.new(
+            (math.random() - 0.5) * 0.1,
+            (math.random() - 0.5) * 0.1,
+            (math.random() - 0.5) * 0.1
+        )
+    end
+    local objSpaceHeadOffset = targetHead.CFrame:ToObjectSpace(CFrame.new(aimedPos))
+    local cameradata = {}
+    cameradata[utf8.char(1)] = {
+        [utf8.char(0)] = RageUtil:EncodeCFrame(aimCF),
+        [utf8.char(1)] = RageUtil:EncodeCFrame(targetCF),
+        [utf8.char(2)] = targetHead,
+        [utf8.char(3)] = RageUtil:EncodeCFrame(objSpaceHeadOffset),
+    }
+    pcall(function()
+        UseItemR:FireServer(
+            item:Get("ObjectID"),
+            RageEnum:ToEnum("StartShooting"),
+            cameradata,
+            nil
+        )
+    end)
+end)
+table.insert(HUB.conns, rageConn)
+
+-- ── Rage UI ───────────────────────────────────────────────────────────────
+local RageSub = RageTab:AddSubTab("Ragebot")
+RageSub:AddSection("Ragebot")
+RageSub:AddToggle({
+    Name = "Ragebot", Default = false, Flag = "rv_rage",
+    Description = "Auto-equips weapon, desyncs into the closest enemy and fires with spoofed cam data",
+    Callback = function(v)
+        rage.enabled = v
+        if v and not rageReady then
+            Notify("Rage", "Controllers/modules not found — ragebot unavailable", "Error", 3.5)
+        else
+            Notify("Rage", v and "Ragebot ON" or "Ragebot OFF", v and "Success" or "Error")
+        end
+    end,
+})
+local applyWeaponSlot = function(v) rage.weaponSlot = v end
+local weaponSlotDropdown = RageSub:AddDropdown({
+    Name = "Weapon Slot", Options = { "Primary", "Secondary", "Melee" }, Default = "Melee",
+    MaxVisible = 3, Flag = "rv_rage_slot", Callback = applyWeaponSlot,
+})
+registerResync(weaponSlotDropdown, applyWeaponSlot)
+RageSub:AddSlider({
+    Name = "Fire Rate", Min = 0.0001, Max = 0.05, Default = 0.0005, Suffix = "s", Flag = "rv_rage_firerate",
+    Description = "Seconds between shots (lower = faster)",
+    Callback = function(v) rage.fireRate = v end,
+})
+RageSub:AddSlider({
+    Name = "Max Distance", Min = 50, Max = 2000, Default = 500, Suffix = "", Flag = "rv_rage_dist",
+    Description = "Target lock range in studs",
+    Callback = function(v) rage.maxDist = v end,
+})
+RageSub:AddToggle({
+    Name = "Team Check", Default = true, Flag = "rv_rage_team",
+    Description = "Uses duel TeamID / TeamID attribute",
+    Callback = function(v) rage.teamCheck = v end,
+})
+RageSub:AddToggle({
+    Name = "Deflect Check", Default = true, Flag = "rv_rage_deflect",
+    Description = "Skips targets that are parrying with a Katana",
+    Callback = function(v) rage.deflectCheck = v end,
+})
+RageSub:AddToggle({
+    Name = "Random Offset", Default = true, Flag = "rv_rage_offset",
+    Description = "Small random jitter on the aim point",
+    Callback = function(v) rage.randomOffset = v end,
+})
+
+local DesyncSub = RageTab:AddSubTab("Desync")
+DesyncSub:AddSection("Desync")
+DesyncSub:AddToggle({
+    Name = "Desync", Default = true, Flag = "rv_rage_desync",
+    Description = "Temporarily shift your character into the target for the shot, then restore",
+    Callback = function(v) rage.desync = v end,
+})
+DesyncSub:AddToggle({
+    Name = "Knife Adjust", Default = true, Flag = "rv_rage_knife",
+    Description = "Use a higher desync offset against knife users",
+    Callback = function(v) rage.knifeAdjust = v end,
+})
+DesyncSub:AddParagraph({
+    Title = "Note",
+    Text = "Desync repositions your character for the exact frame of the shot. If it feels too aggressive, turn it off and the ragebot will fire from your normal position instead.",
+})
+
+-- ── Rapid Hit (zero out all weapon cooldowns) ────────────────────────────
+local rapidHitEnabled = false
+local RapidItemLibrary
+local rapidScanThread
+
+do
+    local ok, il = pcall(require, repS.Modules.ItemLibrary)
+    if ok then RapidItemLibrary = il end
+end
+
+local function ScanCooldowns(tbl)
+    if type(tbl) ~= "table" then return end
+    for k, v in pairs(tbl) do
+        if type(v) == "table" then
+            if v.ShootCooldown ~= nil then v.ShootCooldown = 0.000000000000000001 end
+            if v.BurstCooldown ~= nil then v.BurstCooldown = 0.000000000000000001 end
+            if v.AttackCooldown ~= nil then v.AttackCooldown = 0.000000000000000001 end
+            if v.HeavyAttackCooldown ~= nil then v.HeavyAttackCooldown = 0.000000000000000001 end
+            ScanCooldowns(v)
+        end
+    end
+end
+
+local function RapidHitLoop()
+    while rapidHitEnabled do
+        task.wait(1)
+        if RapidItemLibrary then
+            pcall(function() ScanCooldowns(RapidItemLibrary) end)
+        end
+    end
+end
+
+local RapidSub = RageTab:AddSubTab("Rapid Hit")
+RapidSub:AddSection("Rapid Hit")
+RapidSub:AddToggle({
+    Name = "Rapid Hit", Default = false, Flag = "rv_rapid",
+    Description = "Zeroes Shoot/Burst/Attack/HeavyAttack cooldowns on every item in the library",
+    Callback = function(v)
+        rapidHitEnabled = v
+        if v then
+            if not RapidItemLibrary then
+                Notify("Rage", "ItemLibrary not found — rapid hit unavailable", "Error", 3.5)
+            else
+                pcall(function() ScanCooldowns(RapidItemLibrary) end)
+                rapidScanThread = task.spawn(RapidHitLoop)
+                Notify("Rage", "Rapid Hit ON — all cooldowns zeroed", "Success")
+            end
+        else
+            Notify("Rage", "Rapid Hit OFF", "Error")
+        end
+    end,
+})
+RapidSub:AddParagraph({
+    Title = "Note",
+    Text = "Re-scans every second so freshly-loaded items get patched too. Works together with the ragebot for maximum fire rate.",
+})
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- VISUALS TAB
@@ -721,6 +1121,416 @@ track(UserInputService.JumpRequest:Connect(function()
 end))
 
 -- ══════════════════════════════════════════════════════════════════════════════
+-- UNLOCK ALL EMOTES (Player tab)
+-- ══════════════════════════════════════════════════════════════════════════════
+local emotesEnabled = false
+local CosmeticLibrary, EmoteController, PlayerDataController
+local EmotesFolder
+local origOwnsCosmetic, origCanEmote, origUseEmoteByName
+local emoteConns = {}
+local isLocalEmoting = false
+local localEmoteObject = nil
+local currentLocalEmote = nil
+local runningEmoteConn = nil
+local previousCameraMode = nil
+local previousMinZoom = nil
+local hookedEntity = nil
+local oldEntityIsEmoting, oldEntityGetCurrentEmote
+
+do
+    local ok1, cl = pcall(require, reps.Modules.CosmeticLibrary)
+    if ok1 then CosmeticLibrary = cl end
+    local ok2, ec = pcall(require, LocalPlayer.PlayerScripts.Controllers.EmoteController)
+    if ok2 then EmoteController = ec end
+    local ok3, pd = pcall(require, LocalPlayer.PlayerScripts.Controllers.PlayerDataController)
+    if ok3 then PlayerDataController = pd end
+    EmotesFolder = reps.Modules:FindFirstChild("Emotes")
+end
+
+local function EmoteSafeFire(signal)
+    if not signal then return end
+    if type(signal) == "table" then
+        if type(signal.Fire) == "function" then pcall(function() signal:Fire() end)
+        elseif type(signal.fire) == "function" then pcall(function() signal:fire() end) end
+    elseif typeof(signal) == "Instance" and signal:IsA("BindableEvent") then
+        pcall(function() signal:Fire() end)
+    end
+end
+
+local function StopLocalEmote()
+    if not isLocalEmoting then return end
+    isLocalEmoting = false
+    localEmoteObject = nil
+    pcall(function()
+        if previousCameraMode ~= nil then
+            LocalPlayer.CameraMode = previousCameraMode
+            previousCameraMode = nil
+        end
+        if previousMinZoom ~= nil then
+            LocalPlayer.CameraMinZoomDistance = previousMinZoom
+            previousMinZoom = nil
+        end
+    end)
+    local fighter = FighterController and FighterController:GetFighter(LocalPlayer)
+    local entity = fighter and fighter.Entity
+    if entity and entity.EmoteStatusChanged then
+        EmoteSafeFire(entity.EmoteStatusChanged)
+    end
+    if currentLocalEmote then
+        pcall(function() currentLocalEmote:Destroy() end)
+        currentLocalEmote = nil
+    end
+end
+
+local function SetupEmoteHumanoid(character)
+    if not character then return end
+    local humanoid = character:WaitForChild("Humanoid", 10)
+    if not humanoid then return end
+    if runningEmoteConn then
+        runningEmoteConn:Disconnect()
+        runningEmoteConn = nil
+    end
+    runningEmoteConn = humanoid.Running:Connect(function(speed)
+        if speed > 0.1 and isLocalEmoting then
+            StopLocalEmote()
+        end
+    end)
+end
+
+local function EmoteGetLocalEntity()
+    local fighter = FighterController and FighterController:GetFighter(LocalPlayer)
+    if fighter and fighter.IsLocalPlayer then
+        return fighter.Entity
+    end
+    return nil
+end
+
+local function EmoteHookEntity(entity)
+    if not entity then return end
+    if hookedEntity == entity then return end
+    if hookedEntity and hookedEntity ~= entity then
+        if hookedEntity and oldEntityIsEmoting then
+            pcall(function() hookedEntity.IsEmoting = oldEntityIsEmoting end)
+        end
+        if hookedEntity and oldEntityGetCurrentEmote then
+            pcall(function() hookedEntity.GetCurrentEmote = oldEntityGetCurrentEmote end)
+        end
+    end
+    hookedEntity = entity
+    oldEntityIsEmoting = entity.IsEmoting
+    oldEntityGetCurrentEmote = entity.GetCurrentEmote
+    entity.IsEmoting = function(self, ...)
+        if isLocalEmoting then return true end
+        return oldEntityIsEmoting(self, ...)
+    end
+    entity.GetCurrentEmote = function(self, ...)
+        if isLocalEmoting and localEmoteObject then return localEmoteObject end
+        return oldEntityGetCurrentEmote(self, ...)
+    end
+end
+
+local function EmoteUnhookEntity()
+    if hookedEntity then
+        if oldEntityIsEmoting then pcall(function() hookedEntity.IsEmoting = oldEntityIsEmoting end) end
+        if oldEntityGetCurrentEmote then pcall(function() hookedEntity.GetCurrentEmote = oldEntityGetCurrentEmote end) end
+    end
+    hookedEntity = nil
+    oldEntityIsEmoting = nil
+    oldEntityGetCurrentEmote = nil
+end
+
+local function ApplyEmotes(on)
+    if on then
+        if CosmeticLibrary and not origOwnsCosmetic then
+            origOwnsCosmetic = CosmeticLibrary.OwnsCosmetic
+            CosmeticLibrary.OwnsCosmetic = function(self, inventory, cosmeticName)
+                local cosmetic = CosmeticLibrary.Cosmetics and CosmeticLibrary.Cosmetics[cosmeticName]
+                if cosmetic and cosmetic.Type == "Emote" then return true end
+                return origOwnsCosmetic(self, inventory, cosmeticName)
+            end
+        end
+        if EmoteController and not origCanEmote then
+            origCanEmote = EmoteController.CanEmote
+            EmoteController.CanEmote = function(self, p2)
+                local ok, result = pcall(origCanEmote, self, p2)
+                if ok and result then return true end
+                local fighter = FighterController and FighterController:GetFighter(LocalPlayer)
+                if fighter and fighter.IsLocalPlayer and fighter:IsAlive() then
+                    local entity = fighter.Entity
+                    if entity and not entity:Get("IsFrozen") then return true end
+                end
+                return false
+            end
+        end
+        if EmoteController and not origUseEmoteByName then
+            origUseEmoteByName = EmoteController.UseEmoteByName
+            EmoteController.UseEmoteByName = function(self, emoteName)
+                StopLocalEmote()
+                local ownsEmote = origOwnsCosmetic and origOwnsCosmetic(CosmeticLibrary, PlayerDataController and PlayerDataController:Get("CosmeticInventory"), emoteName) or false
+                pcall(function() origUseEmoteByName(self, emoteName) end)
+                if not ownsEmote then
+                    task.spawn(function()
+                        local emoteModule = EmotesFolder and EmotesFolder:FindFirstChild(emoteName)
+                        local character = LocalPlayer.Character
+                        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+                        if emoteModule and humanoid then
+                            task.wait(0.1)
+                            pcall(function()
+                                currentLocalEmote = require(emoteModule).new(humanoid)
+                                previousCameraMode = LocalPlayer.CameraMode
+                                previousMinZoom = LocalPlayer.CameraMinZoomDistance
+                                LocalPlayer.CameraMode = Enum.CameraMode.Classic
+                                LocalPlayer.CameraMinZoomDistance = 8
+                                isLocalEmoting = true
+                                localEmoteObject = currentLocalEmote
+                                local entity = EmoteGetLocalEntity()
+                                if entity then
+                                    EmoteHookEntity(entity)
+                                    if entity.EmoteStatusChanged then
+                                        EmoteSafeFire(entity.EmoteStatusChanged)
+                                    end
+                                end
+                                task.defer(currentLocalEmote.Simulate, currentLocalEmote)
+                                currentLocalEmote.Destroying:Wait()
+                                if isLocalEmoting then StopLocalEmote() end
+                                EmoteUnhookEntity()
+                            end)
+                        end
+                    end)
+                end
+            end
+        end
+        table.insert(emoteConns, LocalPlayer.CharacterAdded:Connect(function(character)
+            StopLocalEmote()
+            SetupEmoteHumanoid(character)
+        end))
+        SetupEmoteHumanoid(LocalPlayer.Character)
+    else
+        StopLocalEmote()
+        EmoteUnhookEntity()
+        if runningEmoteConn then runningEmoteConn:Disconnect(); runningEmoteConn = nil end
+        for _, c in ipairs(emoteConns) do pcall(function() c:Disconnect() end) end
+        table.clear(emoteConns)
+        if CosmeticLibrary and origOwnsCosmetic then pcall(function() CosmeticLibrary.OwnsCosmetic = origOwnsCosmetic end); origOwnsCosmetic = nil end
+        if EmoteController and origCanEmote then pcall(function() EmoteController.CanEmote = origCanEmote end); origCanEmote = nil end
+        if EmoteController and origUseEmoteByName then pcall(function() EmoteController.UseEmoteByName = origUseEmoteByName end); origUseEmoteByName = nil end
+    end
+end
+
+local EmoteSub = PlayerTab:AddSubTab("Emotes")
+EmoteSub:AddSection("Unlock All Emotes")
+EmoteSub:AddToggle({
+    Name = "Unlock All Emotes", Default = false, Flag = "rv_emotes",
+    Description = "Lets you play every emote — even ones you don't own",
+    Callback = function(v)
+        emotesEnabled = v
+        ApplyEmotes(v)
+        if v and not (CosmeticLibrary and EmoteController) then
+            Notify("Emotes", "Cosmetic/Emote modules not found", "Error", 3.5)
+        else
+            Notify("Emotes", v and "All emotes unlocked" or "Emotes off", v and "Success" or "Error")
+        end
+    end,
+})
+EmoteSub:AddParagraph({
+    Title = "How it works",
+    Text = "Spoofs OwnsCosmetic + CanEmote and simulates unowned emotes locally so they play for you. Open your emote wheel and pick anything.",
+})
+
+-- ══════════════════════════════════════════════════════════════════════════════
+-- SPOOF (Player tab) — name / level / winstreak
+-- ══════════════════════════════════════════════════════════════════════════════
+local spoofConfig = {
+    nameSpoof = true,
+    yourName = "Andy",
+    enemyName = "Johnny",
+    levelSpoof = false,
+    spoofedLevel = 996,
+    winstreakSpoof = false,
+    spoofedWinstreak = 56,
+}
+local spoofConns = {}
+local spoofLoopAlive = true
+
+local function SpoofPlayer(player)
+    if not spoofConfig.nameSpoof then return end
+    if player == LocalPlayer then
+        pcall(function()
+            player.Name = spoofConfig.yourName
+            player.DisplayName = spoofConfig.yourName
+        end)
+    else
+        pcall(function()
+            player.Name = spoofConfig.enemyName
+            player.DisplayName = spoofConfig.enemyName
+        end)
+    end
+end
+
+local function SpoofLeaderstats(player)
+    if player ~= LocalPlayer then return end
+    local leaderstats = player:FindFirstChild("CustomLeaderstats")
+    if not leaderstats then return end
+    if spoofConfig.levelSpoof then
+        local levelVal = leaderstats:FindFirstChild("Level")
+        if levelVal and levelVal:IsA("IntValue") then levelVal.Value = spoofConfig.spoofedLevel end
+        pcall(function() player:SetAttribute("Level", spoofConfig.spoofedLevel) end)
+    end
+    if spoofConfig.winstreakSpoof then
+        local streakFolder = leaderstats:FindFirstChild("Win Streak")
+        if streakFolder then
+            if streakFolder:IsA("Folder") then
+                local streakVal = streakFolder:FindFirstChildWhichIsA("IntValue")
+                if streakVal then streakVal.Value = spoofConfig.spoofedWinstreak end
+            elseif streakFolder:IsA("IntValue") then
+                streakFolder.Value = spoofConfig.spoofedWinstreak
+            end
+        end
+        pcall(function() player:SetAttribute("StatisticDuelsWinStreak", spoofConfig.spoofedWinstreak) end)
+    end
+end
+
+local GUI_PATH = {
+    "PlayerGui", "MainGui", "PlayerList", "Container",
+    "Elements", "Container", "Middle", "List", "Container",
+}
+
+local function GetListContainer()
+    local node = LocalPlayer
+    for _, name in ipairs(GUI_PATH) do
+        if not node then return nil end
+        node = node:FindFirstChild(name)
+    end
+    return node
+end
+
+local function FindAllTitleLabels(instance, results)
+    results = results or {}
+    if not instance then return results end
+    for _, child in ipairs(instance:GetChildren()) do
+        if child:IsA("TextLabel") and child.Name == "Title" then table.insert(results, child) end
+        FindAllTitleLabels(child, results)
+    end
+    return results
+end
+
+local function SpoofTitleLabels(container)
+    if not container then return end
+    for _, playerFrame in ipairs(container:GetChildren()) do
+        if playerFrame:IsA("Frame") then
+            local spoofed = false
+            local innerContainer = playerFrame:FindFirstChild("Container")
+            if innerContainer and innerContainer:IsA("Frame") then
+                for _, child in ipairs(innerContainer:GetChildren()) do
+                    if child:IsA("Frame") then
+                        local titleLabel = child:FindFirstChild("Title")
+                        if titleLabel and titleLabel:IsA("TextLabel") then
+                            local isLocal = titleLabel.Text == LocalPlayer.Name or titleLabel.Text == LocalPlayer.DisplayName
+                            titleLabel.Text = isLocal and spoofConfig.yourName or spoofConfig.enemyName
+                            spoofed = true
+                        end
+                    end
+                end
+            end
+            if not spoofed then
+                local labels = FindAllTitleLabels(playerFrame)
+                for _, titleLabel in ipairs(labels) do
+                    local isLocal = titleLabel.Text == LocalPlayer.Name or titleLabel.Text == LocalPlayer.DisplayName
+                    titleLabel.Text = isLocal and spoofConfig.yourName or spoofConfig.enemyName
+                end
+            end
+        end
+    end
+end
+
+local function StartSpoofLoop()
+    task.spawn(function()
+        local playerGui = LocalPlayer:WaitForChild("PlayerGui", 30)
+        if not playerGui then return end
+        local monitoredContainer = nil
+        while spoofLoopAlive do
+            task.wait(0.5)
+            if not spoofConfig.nameSpoof then
+                -- name spoof off: just idle until it's enabled again
+            else
+                local listContainer = GetListContainer()
+                if listContainer and listContainer ~= monitoredContainer then
+                    monitoredContainer = listContainer
+                    local conn = listContainer.ChildAdded:Connect(function(child)
+                        if child:IsA("Frame") then
+                            task.wait(0.1)
+                            pcall(SpoofTitleLabels, listContainer)
+                        end
+                    end)
+                    table.insert(spoofConns, conn)
+                end
+                if listContainer then
+                    pcall(SpoofTitleLabels, listContainer)
+                end
+            end
+        end
+    end)
+end
+
+local function ApplySpoof(on)
+    if on then
+        for _, player in ipairs(Players:GetPlayers()) do
+            SpoofPlayer(player)
+            if player == LocalPlayer then
+                SpoofLeaderstats(player)
+            end
+        end
+        local addedConn = Players.PlayerAdded:Connect(function(player) SpoofPlayer(player) end)
+        table.insert(spoofConns, addedConn)
+        StartSpoofLoop()
+    else
+        for _, c in ipairs(spoofConns) do pcall(function() c:Disconnect() end) end
+        table.clear(spoofConns)
+    end
+end
+
+local SpoofSub = PlayerTab:AddSubTab("Spoof")
+SpoofSub:AddSection("Name Spoof")
+SpoofSub:AddToggle({
+    Name = "Name Spoof", Default = true, Flag = "rv_spoof_name",
+    Description = "Shows a fake name for you and everyone else",
+    Callback = function(v)
+        spoofConfig.nameSpoof = v
+        if v then
+            ApplySpoof(true)
+        else
+            for _, c in ipairs(spoofConns) do pcall(function() c:Disconnect() end) end
+            table.clear(spoofConns)
+        end
+    end,
+})
+SpoofSub:AddInput({
+    Name = "Your Name", Default = "Andy", Flag = "rv_spoof_yname",
+    Callback = function(t) spoofConfig.yourName = t end,
+})
+SpoofSub:AddInput({
+    Name = "Enemy Name", Default = "Johnny", Flag = "rv_spoof_ename",
+    Callback = function(t) spoofConfig.enemyName = t end,
+})
+SpoofSub:AddSection("Stats Spoof")
+SpoofSub:AddToggle({
+    Name = "Level Spoof", Default = false, Flag = "rv_spoof_level",
+    Callback = function(v) spoofConfig.levelSpoof = v; if v then SpoofLeaderstats(LocalPlayer) end end,
+})
+SpoofSub:AddInput({
+    Name = "Spoofed Level", Default = "996", Flag = "rv_spoof_levelval",
+    Callback = function(t) spoofConfig.spoofedLevel = tonumber(t) or 996 end,
+})
+SpoofSub:AddToggle({
+    Name = "Winstreak Spoof", Default = false, Flag = "rv_spoof_ws",
+    Callback = function(v) spoofConfig.winstreakSpoof = v; if v then SpoofLeaderstats(LocalPlayer) end end,
+})
+SpoofSub:AddInput({
+    Name = "Spoofed Winstreak", Default = "56", Flag = "rv_spoof_wsval",
+    Callback = function(t) spoofConfig.spoofedWinstreak = tonumber(t) or 56 end,
+})
+
+-- ══════════════════════════════════════════════════════════════════════════════
 -- SYSTEM TAB
 -- ══════════════════════════════════════════════════════════════════════════════
 local SystemTab = Window:AddTab({ Name = "System", Subtitle = "Settings & config", Icon = "settings" })
@@ -792,6 +1602,16 @@ end
 -- ══════════════════════════════════════════════════════════════════════════════
 local function Cleanup()
     aim.enabled = false
+    rage.enabled = false
+    equipLoopAlive = false
+    table.clear(deflecting)
+    pcall(function() runSR:UnbindFromRenderStep("OxideRageRestore") end)
+    noSpreadEnabled = false; ApplyNoSpread(false)
+    rapidHitEnabled = false
+    emotesEnabled = false; ApplyEmotes(false)
+    spoofLoopAlive = false
+    for _, c in ipairs(spoofConns) do pcall(function() c:Disconnect() end) end
+    table.clear(spoofConns)
     wsEnabled = false; jpEnabled = false; infJump = false
     flyEnabled = false; noclipEnabled = false; fullbright = false
     UninstallHooks()
