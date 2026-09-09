@@ -37,6 +37,7 @@ local GAME_NAMES = {
     [128736949265057]  = "Gakuran",
     [108628039999641]  = "Search For The Needle",
     [77108422251420]   = "Search For The Needle",
+    [17625359962]      = "RIVALS",
 }
 
 -- Always use the stable public library.
@@ -104,6 +105,7 @@ local GAME_MAP = {
     [128736949265057]  = "Gakuran.lua",             -- Gakuran 🥋
     [108628039999641]  = "NeedleHaystack.lua",      -- Search For The Needle (Kapitel 1: Bauernhaus) 🌾
     [77108422251420]   = "NeedleHaystack.lua",      -- Search For The Needle (root place) 🌾
+    [17625359962]      = "Rivals.lua",              -- RIVALS 🔫
     -- [PlaceId] = "Script.lua",  ← füg neue Games hier hinzu
 }
 
@@ -113,6 +115,7 @@ local GAME_MAP_BY_GAMEID = {
     [9656201728] = "DungeonLootr.lua",              -- Dungeon-Lootr Universe ⚔️
     [10690360998] = "JumpForPets.lua",
     [10756011174] = "NeedleHaystack.lua",           -- Search For The Needle Universe 🌾 (catches every chapter place)
+    [6035872082]  = "Rivals.lua",                    -- RIVALS Universe 🔫
     -- [GameId] = "Script.lua",
 }
 
