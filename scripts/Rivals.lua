@@ -94,14 +94,23 @@ end
 -- ══════════════════════════════════════════════════════════════════════════════
 local rage = {
     enabled = false,
-    fireRate = 0.0005,
+    fireDelayMs = 1, -- fire rate slider is integer ms; 1 = 1ms
     weaponSlot = "Melee", -- Primary / Secondary / Melee
+    hitPart = "Head", -- Head / Torso / Random
     maxDist = 500,
     teamCheck = true,
     deflectCheck = true,
     desync = true,
     knifeAdjust = true,
     randomOffset = true,
+    priority = "Lowest HP", -- Lowest HP / Closest
+    autoShoot = false, -- fire even without holding LMB
+    prediction = false,
+    bulletSpeed = 350,
+    burst = 1,
+    lowHPPrio = false,
+    lowHPThreshold = 60,
+    wallCheck = false,
 }
 
 -- ── No Spread ───────────────────────────────────────────────────────────
@@ -252,6 +261,7 @@ local function GetClosestTargetR()
     if not myRoot then return nil, nil, nil end
     local closestPlayer, closestRoot, closestHead
     local closestDist = rage.maxDist
+    local lowHPP, lowHPRoot, lowHPHead, lowHPHp = nil, nil, nil, math.huge
     for _, player in plrsR:GetPlayers() do
         if IsEnemyR(player) then
             local pChar = player.Character
@@ -267,8 +277,25 @@ local function GetClosestTargetR()
                         closestRoot = pRoot
                         closestHead = pHead
                     end
+                    if rage.lowHPPrio or rage.priority == "Lowest HP" then
+                        if pHum.Health < lowHPHp then
+                            lowHPHp = pHum.Health
+                            lowHPP = player
+                            lowHPRoot = pRoot
+                            lowHPHead = pHead
+                        end
+                    end
                 end
             end
+        end
+    end
+    if rage.priority == "Lowest HP" and lowHPP then
+        if rage.lowHPPrio then
+            if lowHPHp < rage.lowHPThreshold then
+                return lowHPP, lowHPRoot, lowHPHead
+            end
+        else
+            return lowHPP, lowHPRoot, lowHPHead
         end
     end
     return closestPlayer, closestRoot, closestHead
@@ -290,6 +317,9 @@ local function HasKnifeViewModel(targetPlayer)
 end
 
 local lastFire = 0
+local function RageFireDelay()
+    return math.max(rage.fireDelayMs, 0.5) / 1000
+end
 local rageConn = runSR.Heartbeat:Connect(function()
     if HUB.dead then return end
     if not rage.enabled then
@@ -334,37 +364,83 @@ local rageConn = runSR.Heartbeat:Connect(function()
     if not FighterController or not FighterController.LocalFighter then return end
     local item = FighterController.LocalFighter.EquippedItem
     if not item then return end
-    if tick() - lastFire < rage.fireRate then return end
-    lastFire = tick()
-
-    local originPos = desyncCF and desyncCF.Position or targetRoot.Position
-    local targetPos = targetHead.Position
-    local aimCF = CFrame.lookAt(originPos, targetPos)
-    local targetCF = targetHead.CFrame
-    local aimedPos = targetPos
-    if rage.randomOffset then
-        aimedPos = targetPos + Vector3.new(
-            (math.random() - 0.5) * 0.1,
-            (math.random() - 0.5) * 0.1,
-            (math.random() - 0.5) * 0.1
-        )
+    -- optional wall check: don't shoot targets behind cover
+    if rage.wallCheck and targetHead then
+        local myHead = LocalPlayer.Character:FindFirstChild("Head")
+        if myHead then
+            local rayParams = RaycastParams.new()
+            rayParams.FilterType = Enum.RaycastFilterType.Exclude
+            rayParams.FilterDescendantsInstances = { LocalPlayer.Character }
+            local dir = targetHead.Position - myHead.Position
+            local result = workspace:Raycast(myHead.Position, dir, rayParams)
+            if result and result.Instance then
+                local hitChar = result.Instance:FindFirstAncestorOfClass("Model")
+                if hitChar ~= targetPlayer.Character then return end
+            end
+        end
     end
-    local objSpaceHeadOffset = targetHead.CFrame:ToObjectSpace(CFrame.new(aimedPos))
-    local cameradata = {}
-    cameradata[utf8.char(1)] = {
-        [utf8.char(0)] = RageUtil:EncodeCFrame(aimCF),
-        [utf8.char(1)] = RageUtil:EncodeCFrame(targetCF),
-        [utf8.char(2)] = targetHead,
-        [utf8.char(3)] = RageUtil:EncodeCFrame(objSpaceHeadOffset),
-    }
-    pcall(function()
-        UseItemR:FireServer(
-            item:Get("ObjectID"),
-            RageEnum:ToEnum("StartShooting"),
-            cameradata,
-            nil
-        )
-    end)
+    -- auto-shoot: fire even without holding LMB; otherwise require the button
+    if not rage.autoShoot then
+        local holding = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+        if not holding then return end
+    end
+
+    -- pick the hit part (Head / Torso / Random)
+    local hitPart = targetHead
+    if rage.hitPart == "Torso" then
+        hitPart = targetPlayer.Character:FindFirstChild("HumanoidRootPart") or targetPlayer.Character:FindFirstChild("Torso") or targetHead
+    elseif rage.hitPart == "Random" then
+        local roll = math.random(1, 3)
+        if roll == 1 then
+            hitPart = targetHead
+        else
+            hitPart = targetPlayer.Character:FindFirstChild("HumanoidRootPart") or targetPlayer.Character:FindFirstChild("Torso") or targetHead
+        end
+    end
+
+    local burstCount = math.max(1, math.floor(rage.burst or 1))
+    for _ = 1, burstCount do
+        if tick() - lastFire < RageFireDelay() then return end
+        lastFire = tick()
+
+        local originPos = desyncCF and desyncCF.Position or targetRoot.Position
+        local targetPos = hitPart.Position
+        if rage.prediction then
+            local pRootVel = targetRoot.Velocity
+            if pRootVel and pRootVel.Magnitude > 0.5 then
+                local distToT = (originPos - targetPos).Magnitude
+                local travelTime = distToT / math.max(rage.bulletSpeed, 50)
+                targetPos = targetPos + pRootVel * travelTime
+            end
+        end
+        local aimCF = CFrame.lookAt(originPos, targetPos)
+        local targetCF = hitPart.CFrame
+        local aimedPos = targetPos
+        if rage.randomOffset then
+            aimedPos = targetPos + Vector3.new(
+                (math.random() - 0.5) * 0.1,
+                (math.random() - 0.5) * 0.1,
+                (math.random() - 0.5) * 0.1
+            )
+        end
+        local objSpaceHeadOffset = hitPart.CFrame:ToObjectSpace(CFrame.new(aimedPos))
+        local cameradata = {}
+        cameradata[utf8.char(1)] = {
+            [utf8.char(0)] = RageUtil:EncodeCFrame(aimCF),
+            [utf8.char(1)] = RageUtil:EncodeCFrame(targetCF),
+            [utf8.char(2)] = hitPart,
+            [utf8.char(3)] = RageUtil:EncodeCFrame(objSpaceHeadOffset),
+        }
+        local okFire, errFire = pcall(function()
+            UseItemR:FireServer(
+                item:Get("ObjectID"),
+                RageEnum:ToEnum("StartShooting"),
+                cameradata,
+                nil
+            )
+        end)
+        if not okFire then return end
+    end
 end)
 table.insert(HUB.conns, rageConn)
 
@@ -389,13 +465,25 @@ local weaponSlotDropdown = RageSub:AddDropdown({
 })
 registerResync(weaponSlotDropdown, applyWeaponSlot)
 RageSub:AddSlider({
-    Name = "Fire Rate", Min = 0.0001, Max = 0.05, Default = 0.0005, Suffix = "s", Flag = "rv_rage_firerate",
-    Callback = function(v) rage.fireRate = v end,
+    Name = "Fire Rate", Min = 1, Max = 50, Default = 1, Suffix = "ms", Flag = "rv_rage_firerate",
+    Callback = function(v) rage.fireDelayMs = v end,
 })
 RageSub:AddSlider({
     Name = "Max Distance", Min = 50, Max = 2000, Default = 500, Suffix = "", Flag = "rv_rage_dist",
     Callback = function(v) rage.maxDist = v end,
 })
+local applyHitPart = function(v) rage.hitPart = v end
+local hitPartDropdown = RageSub:AddDropdown({
+    Name = "Hit Part", Options = { "Head", "Torso", "Random" }, Default = "Head",
+    MaxVisible = 3, Flag = "rv_rage_hitpart", Callback = applyHitPart,
+})
+registerResync(hitPartDropdown, applyHitPart)
+local applyPriority = function(v) rage.priority = v end
+local priorityDropdown = RageSub:AddDropdown({
+    Name = "Target Priority", Options = { "Lowest HP", "Closest" }, Default = "Lowest HP",
+    MaxVisible = 2, Flag = "rv_rage_priority", Callback = applyPriority,
+})
+registerResync(priorityDropdown, applyPriority)
 RageSub:AddToggle({
     Name = "Team Check", Default = true, Flag = "rv_rage_team",
     Callback = function(v) rage.teamCheck = v end,
@@ -407,6 +495,34 @@ RageSub:AddToggle({
 RageSub:AddToggle({
     Name = "Random Offset", Default = true, Flag = "rv_rage_offset",
     Callback = function(v) rage.randomOffset = v end,
+})
+RageSub:AddToggle({
+    Name = "Auto Shoot", Default = false, Flag = "rv_rage_autoshoot",
+    Callback = function(v) rage.autoShoot = v end,
+})
+RageSub:AddToggle({
+    Name = "Wall Check", Default = false, Flag = "rv_rage_wallcheck",
+    Callback = function(v) rage.wallCheck = v end,
+})
+RageSub:AddSlider({
+    Name = "Burst Shots", Min = 1, Max = 10, Default = 1, Suffix = "", Flag = "rv_rage_burst",
+    Callback = function(v) rage.burst = v end,
+})
+RageSub:AddToggle({
+    Name = "Prediction", Default = false, Flag = "rv_rage_pred",
+    Callback = function(v) rage.prediction = v end,
+})
+RageSub:AddSlider({
+    Name = "Bullet Speed", Min = 100, Max = 1500, Default = 350, Suffix = "", Flag = "rv_rage_bulletspeed",
+    Callback = function(v) rage.bulletSpeed = v end,
+})
+RageSub:AddToggle({
+    Name = "Low HP Only (below threshold)", Default = false, Flag = "rv_rage_lowhp",
+    Callback = function(v) rage.lowHPPrio = v end,
+})
+RageSub:AddSlider({
+    Name = "Low HP Threshold", Min = 10, Max = 100, Default = 60, Suffix = "", Flag = "rv_rage_lowhpthresh",
+    Callback = function(v) rage.lowHPThreshold = v end,
 })
 
 local DesyncSub = RageTab:AddSubTab("Desync")
@@ -489,6 +605,10 @@ local esp = {
     enabled = true,
     box = false, boxStyle = "Corner", boxThickness = 1,
     name = false, distance = false, health = false,
+    hpPercent = false, weapon = false,
+    skeleton = false, skeletonColor = Color3.fromRGB(120, 255, 120),
+    offscreen = false,
+    visibleCheck = false,
     tracer = false, tracerOrigin = "Bottom",
     teamCheck = false, rainbow = false,
     maxDistance = 1000, textSize = 13,
@@ -496,6 +616,12 @@ local esp = {
     nameColor = Color3.fromRGB(255, 255, 255),
 }
 local playerObjects = {}
+local rayParamsESP
+pcall(function()
+    rayParamsESP = RaycastParams.new()
+    rayParamsESP.FilterType = Enum.RaycastFilterType.Exclude
+    rayParamsESP.IgnoreWater = true
+end)
 
 local function GetPlayerBox(plr)
     local o = playerObjects[plr]
@@ -510,11 +636,65 @@ local function GetPlayerBox(plr)
         o.tracer  = newDrawing("Line", { Thickness = 1.2, Visible = false })
         o.hpBack  = newDrawing("Line", { Thickness = 3, Visible = false, Color = Color3.new(0, 0, 0) })
         o.hp      = newDrawing("Line", { Thickness = 2, Visible = false })
+        o.hpText  = newDrawing("Text", { Color = Color3.fromRGB(255, 255, 255), Size = 11, Outline = true, Centre = true, Visible = false })
+        o.weapon  = newDrawing("Text", { Color = Color3.fromRGB(255, 220, 120), Size = 10, Outline = true, Centre = true, Visible = false })
         o.corners = {}
         for i = 1, 8 do o.corners[i] = newDrawing("Line", { Thickness = 1, Visible = false, Color = Color3.new(1, 1, 1) }) end
+        o.skel = {}
+        for i = 1, 11 do o.skel[i] = newDrawing("Line", { Thickness = 1.2, Visible = false }) end
+        o.offscreen = newDrawing("Line", { Thickness = 1.5, Visible = false })
     end
     playerObjects[plr] = o
     return o
+end
+
+local R15_BONES = {
+    { "Head", "Neck" }, { "Neck", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
+    { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
+    { "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+    { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
+    { "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+}
+local R6_BONES = {
+    { "Head", "Torso" }, { "Torso", "Left Arm" }, { "Torso", "Right Arm" },
+    { "Torso", "Left Leg" }, { "Torso", "Right Leg" },
+}
+
+local function GetSkeletonPairs(char)
+    if char:FindFirstChild("UpperTorso") then return R15_BONES end
+    return R6_BONES
+end
+
+local function GetEquippedWeaponName(plr)
+    if not FighterController or not FighterController.Objects then return nil end
+    for _, fighterObj in FighterController.Objects do
+        if fighterObj.Player == plr and fighterObj.EquippedItem then
+            local name = fighterObj.EquippedItem.Name or fighterObj.EquippedItem:Get("Name")
+            if name and name ~= "" then return name end
+        end
+    end
+    return nil
+end
+
+local function IsPlayerVisible(char, myHeadPos, camDir)
+    if not char then return false end
+    if not rayParamsESP then return true end
+    local targetHead = char:FindFirstChild("Head")
+    local targetPart = targetHead or char:FindFirstChild("HumanoidRootPart")
+    if not targetPart then return true end
+    local origin = myHeadPos or Camera.CFrame.Position
+    local dir = (targetPart.Position - origin)
+    local dist = dir.Magnitude
+    if dist < 1 then return true end
+    dir = dir.Unit
+    pcall(function() rayParamsESP.FilterDescendantsInstances = { LocalPlayer.Character } end)
+    local result = workspace:Raycast(origin, dir * dist, rayParamsESP)
+    if not result then return true end
+    if result.Instance then
+        local m = result.Instance:FindFirstAncestorOfClass("Model")
+        if m == char then return true end
+    end
+    return false
 end
 
 local function GetBox2D(char)
@@ -568,10 +748,11 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
     if HUB.dead then return end
     local enabled = esp.enabled and hasDrawing
     for plr, o in pairs(playerObjects) do
-        for _, d in ipairs({ o.frame, o.outline, o.fill, o.name, o.dist, o.tracer, o.hpBack, o.hp }) do
+        for _, d in ipairs({ o.frame, o.outline, o.fill, o.name, o.dist, o.tracer, o.hpBack, o.hp, o.hpText, o.weapon, o.offscreen }) do
             if d then d.Visible = false end
         end
         for _, l in ipairs(o.corners) do if l then l.Visible = false end end
+        for _, l in ipairs(o.skel) do if l then l.Visible = false end end
     end
     if not enabled then return end
     local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
@@ -590,6 +771,12 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
                         local minX, minY, maxX, maxY = GetBox2D(char)
                         if minX then
                             local color = rainbow or esp.color
+                            if esp.visibleCheck then
+                                local myChar = LocalPlayer.Character
+                                local myHead = myChar and myChar:FindFirstChild("Head")
+                                local visible = IsPlayerVisible(char, myHead and myHead.Position or nil)
+                                if not visible then color = Color3.fromRGB(255, 60, 60) end
+                            end
                             if esp.box then
                                 if o.outline then o.outline.Visible = true; o.outline.Transparency = 0.6; o.outline.Color = color; o.outline.Thickness = esp.boxThickness + 2; o.outline.From = Vector2.new(minX - 1, minY - 1); o.outline.To = Vector2.new(maxX + 1, maxY + 1) end
                                 if esp.boxStyle == "Corner" then
@@ -607,6 +794,22 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
                                 o.hp.Color = h > 0.5 and Color3.fromRGB(90, 220, 90) or (h > 0.25 and Color3.fromRGB(240, 200, 60) or Color3.fromRGB(230, 60, 60))
                                 o.hp.From = Vector2.new(minX - 6, maxY + 2)
                                 o.hp.To = Vector2.new(minX - 6, minY + 2 - (maxY - minY + 4) * math.clamp(h, 0, 1))
+                            end
+                            if esp.hpPercent and o.hpText then
+                                o.hpText.Visible = true
+                                o.hpText.Size = esp.textSize - 2
+                                o.hpText.Text = tostring(math.floor(hum.Health)) .. "/" .. tostring(math.floor(hum.MaxHealth))
+                                o.hpText.Position = Vector2.new(minX - 6, maxY + 2)
+                            end
+                            if esp.weapon and o.weapon then
+                                local wName = GetEquippedWeaponName(plr)
+                                if wName then
+                                    o.weapon.Visible = true
+                                    o.weapon.Size = esp.textSize - 3
+                                    o.weapon.Color = rainbow or Color3.fromRGB(255, 220, 120)
+                                    o.weapon.Text = wName
+                                    o.weapon.Position = Vector2.new((minX + maxX) / 2, maxY + 14)
+                                end
                             end
                             if esp.name and o.name then
                                 o.name.Visible = true
@@ -634,6 +837,43 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
                                     o.tracer.To = Vector2.new(sp.X, sp.Y)
                                 end
                             end
+                            if esp.skeleton and hrp then
+                                local pairs = GetSkeletonPairs(char)
+                                local skelColor = rainbow or esp.skeletonColor
+                                for i, bonePair in ipairs(pairs) do
+                                    local a = char:FindFirstChild(bonePair[1], true)
+                                    local b = char:FindFirstChild(bonePair[2], true)
+                                    local l = o.skel[i]
+                                    if a and b and l then
+                                        local sa, oa = Camera:WorldToViewportPoint(a.Position)
+                                        local sb, ob = Camera:WorldToViewportPoint(b.Position)
+                                        if oa and ob and sa.Z > 0 and sb.Z > 0 then
+                                            l.Visible = true
+                                            l.Color = skelColor
+                                            l.From = Vector2.new(sa.X, sa.Y)
+                                            l.To = Vector2.new(sb.X, sb.Y)
+                                        end
+                                    end
+                                end
+                            end
+                            if esp.offscreen and o.offscreen and hrp then
+                                local sp, on = Camera:WorldToViewportPoint(hrp.Position)
+                                if sp.Z > 0 and not on then
+                                    local vs = Camera.ViewportSize
+                                    local margin = 30
+                                    local cx = math.clamp(sp.X, margin, vs.X - margin)
+                                    local cy = math.clamp(sp.Y, margin, vs.Y - margin)
+                                    local edge = Vector2.new(cx, cy)
+                                    local dirV = (Vector2.new(sp.X, sp.Y) - edge)
+                                    if dirV.Magnitude > 8 then
+                                        local n = dirV.Unit * 14
+                                        o.offscreen.Visible = true
+                                        o.offscreen.Color = rainbow or esp.color
+                                        o.offscreen.From = edge - n
+                                        o.offscreen.To = edge
+                                    end
+                                end
+                            end
                         end
                     end
                 end
@@ -659,9 +899,16 @@ EspSub:AddSection("Text")
 EspSub:AddToggle({ Name = "Name", Default = false, Flag = "rv_espname", Callback = function(v) esp.name = v end })
 EspSub:AddToggle({ Name = "Distance", Default = false, Flag = "rv_espdist", Callback = function(v) esp.distance = v end })
 EspSub:AddToggle({ Name = "Health Bar", Default = false, Flag = "rv_esphp", Callback = function(v) esp.health = v end })
+EspSub:AddToggle({ Name = "HP Percent", Default = false, Flag = "rv_esphppct", Callback = function(v) esp.hpPercent = v end })
+EspSub:AddToggle({ Name = "Weapon Name", Default = false, Flag = "rv_espweapon", Callback = function(v) esp.weapon = v end })
 EspSub:AddSlider({ Name = "Text Size", Min = 10, Max = 20, Default = 13, Suffix = "", Flag = "rv_esptextsize", Callback = function(v) esp.textSize = v end })
+EspSub:AddSection("Skeleton")
+EspSub:AddToggle({ Name = "Skeleton", Default = false, Flag = "rv_espskel", Callback = function(v) esp.skeleton = v end })
+EspSub:AddColorPicker({ Name = "Skeleton Color", Default = esp.skeletonColor, Flag = "rv_espskelcolor", Callback = function(c) esp.skeletonColor = c end })
 EspSub:AddSection("Extras")
 EspSub:AddToggle({ Name = "Tracers", Default = false, Flag = "rv_esptracer", Callback = function(v) esp.tracer = v end })
+EspSub:AddToggle({ Name = "Offscreen Indicators", Default = false, Flag = "rv_espoffscreen", Callback = function(v) esp.offscreen = v end })
+EspSub:AddToggle({ Name = "Visibility Check", Default = false, Flag = "rv_espvisible", Callback = function(v) esp.visibleCheck = v end })
 local applyTracerOrigin = function(v) esp.tracerOrigin = v end
 local tracerOriginDropdown = EspSub:AddDropdown({
     Name = "Tracer Origin", Options = { "Bottom", "Center", "Top", "Mouse" }, Default = "Bottom",
