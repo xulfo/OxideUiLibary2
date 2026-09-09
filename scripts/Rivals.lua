@@ -108,12 +108,6 @@ local aim = {
     targetLineColor = Color3.fromRGB(120, 200, 255),
 }
 
--- Wallbang config: desyncs your character under the target so shots ignore walls.
-local wb = {
-    enabled = false,
-    offset = 5,
-}
-
 -- Ragebot config (declared before the hooks because the UseItem hook closure
 -- needs to skip cam-data overrides while the ragebot is driving its own shots).
 local rage = {
@@ -199,7 +193,7 @@ local function FindTarget()
 end
 
 local function GetTarget(force)
-    if not (aim.enabled or wb.enabled) then
+    if not aim.enabled then
         targetCache.player = nil
         return nil
     end
@@ -214,34 +208,34 @@ end
 
 -- ── StartShooting hook (silent aim core) ─────────────────────────────────
 -- Hooks Gun.StartShooting, rewrites the camdata table it returns (index 3)
--- so the shot registers on the target's head, and sets index 4 = true.
--- When wallbang is on it also desyncs the character under the target first.
+-- so the shot registers on the target's head (index 4 = true), and desyncs
+-- your character under the target first so the shot ignores walls.
 local origStartShooting
-local wbActive = false
-local wbCurrent = nil
-local wbConn = nil
-local wbTask = nil
+local desyncActive = false
+local desyncCurr = nil
+local desyncConn = nil
+local desyncTask = nil
 
 local function StopDesync()
-    wbActive = false
-    wbCurrent = nil
-    if wbConn then
-        pcall(function() wbConn:Disconnect() end)
-        wbConn = nil
+    desyncActive = false
+    desyncCurr = nil
+    if desyncConn then
+        pcall(function() desyncConn:Disconnect() end)
+        desyncConn = nil
     end
-    if wbTask then
-        pcall(function() task.cancel(wbTask) end)
-        wbTask = nil
+    if desyncTask then
+        pcall(function() task.cancel(desyncTask) end)
+        desyncTask = nil
     end
     pcall(function() RunService:UnbindFromRenderStep("OxideWB") end)
 end
 
 local function StartDesync(targetPlayer)
-    if wbConn then pcall(function() wbConn:Disconnect() end) end
-    wbActive = true
-    wbCurrent = targetPlayer
-    wbConn = RunService.Heartbeat:Connect(function()
-        if not wbActive then return end
+    if desyncConn then pcall(function() desyncConn:Disconnect() end) end
+    desyncActive = true
+    desyncCurr = targetPlayer
+    desyncConn = RunService.Heartbeat:Connect(function()
+        if not desyncActive then return end
         local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         if not myRoot then return end
         local tRoot = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -252,7 +246,7 @@ local function StartDesync(targetPlayer)
         local oldCF = myRoot.CFrame
         local oldVel = myRoot.Velocity
         local oldRotVel = myRoot.RotVelocity
-        myRoot.CFrame = tRoot.CFrame * CFrame.new(0, -wb.offset, 0)
+        myRoot.CFrame = tRoot.CFrame * CFrame.new(0, -5, 0)
         RunService:BindToRenderStep("OxideWB", 101, function()
             if myRoot and myRoot.Parent then
                 myRoot.CFrame = oldCF
@@ -284,14 +278,14 @@ local function InstallSilentAim()
             return unpack(results)
         end
 
-        -- Wallbang: desync under the target before the shot registers
-        if wb.enabled and (not wbActive or wbCurrent ~= targetPlayer) then
+        -- Desync under the target before the shot registers
+        if not desyncActive or desyncCurr ~= targetPlayer then
             StartDesync(targetPlayer)
             task.wait(0.1)
         end
-        if wbTask then
-            pcall(function() task.cancel(wbTask) end)
-            wbTask = nil
+        if desyncTask then
+            pcall(function() task.cancel(desyncTask) end)
+            desyncTask = nil
         end
 
         local head = targetPlayer.Character:FindFirstChild("Head")
@@ -299,13 +293,7 @@ local function InstallSilentAim()
 
         local headPos = head.Position
         local headCF = head.CFrame
-        local originPos
-        if wb.enabled then
-            originPos = headPos - Vector3.new(0, wb.offset, 0)
-        else
-            local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            originPos = myRoot and myRoot.Position or headPos
-        end
+        local originPos = headPos - Vector3.new(0, 5, 0)
         local aimCF = CFrame.lookAt(originPos, headPos)
         local orient = aimCF:ToOrientation()
         local jitter = Vector3.zero
@@ -319,11 +307,9 @@ local function InstallSilentAim()
         camdata[utf8.char(2)] = head
         camdata[utf8.char(3)] = U:EncodeCFrame(objOffset)
 
-        if wb.enabled then
-            wbTask = task.delay(0.15, function()
-                StopDesync()
-            end)
-        end
+        desyncTask = task.delay(0.15, function()
+            StopDesync()
+        end)
         return unpack(results)
     end
 end
@@ -342,7 +328,6 @@ local SilentSub = AimTab:AddSubTab("Silent Aim")
 SilentSub:AddSection("Silent Aim")
 SilentSub:AddToggle({
     Name = "Silent Aim", Default = false, Flag = "rv_silent",
-    Description = "Hooks Gun.StartShooting — every shot registers on the locked enemy's head",
     Callback = function(v)
         aim.enabled = v
         if v then
@@ -356,17 +341,14 @@ SilentSub:AddToggle({
 })
 SilentSub:AddSlider({
     Name = "Lock Range", Min = 20, Max = 600, Default = 200, Suffix = "studs", Flag = "rv_maxdist",
-    Description = "Max distance to auto-lock the closest enemy",
     Callback = function(v) aim.maxDist = v end,
 })
 SilentSub:AddToggle({
     Name = "Team Check", Default = true, Flag = "rv_teamcheck",
-    Description = "Skips players with the same TeamID attribute",
     Callback = function(v) aim.teamCheck = v end,
 })
 SilentSub:AddToggle({
     Name = "Jitter", Default = true, Flag = "rv_jitter",
-    Description = "Small random spread on the aim point (anti-detection)",
     Callback = function(v) aim.jitter = v end,
 })
 
@@ -391,7 +373,6 @@ FovSub:AddToggle({
 local TargetSub = AimTab:AddSubTab("Target")
 TargetSub:AddToggle({
     Name = "Target Line", Default = false, Flag = "rv_targetline",
-    Description = "Draws a line from your crosshair to the locked target",
     Callback = function(v) aim.targetLine = v end,
 })
 TargetSub:AddColorPicker({
@@ -402,7 +383,7 @@ local targetStatus = TargetSub:AddLabel({ Text = "Target: none" })
 track(RunService.RenderStepped:Connect(function()
     if HUB.dead then return end
     -- Only scan when something actually needs the target.
-    local needTarget = (aim.enabled or wb.enabled)
+    local needTarget = aim.enabled
     if not needTarget then
         if targetLine then targetLine.Visible = false end
         return
@@ -431,32 +412,6 @@ track(RunService.RenderStepped:Connect(function()
     end
 end))
 
--- ── Wallbang (desync) ────────────────────────────────────────────────────
-local WbSub = AimTab:AddSubTab("Wallbang")
-WbSub:AddSection("Wallbang")
-WbSub:AddToggle({
-    Name = "Wallbang", Default = false, Flag = "rv_wb",
-    Description = "Desyncs your character under the enemy so shots ignore walls (needs Silent Aim or Ragebot target lock)",
-    Callback = function(v)
-        wb.enabled = v
-        if v then
-            InstallSilentAim()
-        else
-            StopDesync()
-        end
-        Notify("Wallbang", v and "Wallbang ON" or "Wallbang OFF", v and "Success" or "Error")
-    end,
-})
-WbSub:AddSlider({
-    Name = "Desync Offset", Min = 1, Max = 20, Default = 5, Suffix = "studs", Flag = "rv_wb_offset",
-    Description = "How far below the target to desync your character",
-    Callback = function(v) wb.offset = v end,
-})
-WbSub:AddParagraph({
-    Title = "Note",
-    Text = "Wallbang teleports your HumanoidRootPart under the enemy for the exact frame of each shot and restores it right after. It also shifts the shot origin to below the head so walls between you and the target never block.",
-})
-
 -- ── No Spread ───────────────────────────────────────────────────────────
 local noSpreadEnabled = false
 local origIsFullyAiming
@@ -478,7 +433,6 @@ local NoSpreadSub = AimTab:AddSubTab("No Spread")
 NoSpreadSub:AddSection("No Spread")
 NoSpreadSub:AddToggle({
     Name = "No Spread", Default = false, Flag = "rv_nospread",
-    Description = "Forces Gun.IsFullyAiming to always return true (perfect accuracy)",
     Callback = function(v)
         noSpreadEnabled = v
         ApplyNoSpread(v)
@@ -726,7 +680,6 @@ local RageSub = RageTab:AddSubTab("Ragebot")
 RageSub:AddSection("Ragebot")
 RageSub:AddToggle({
     Name = "Ragebot", Default = false, Flag = "rv_rage",
-    Description = "Auto-equips weapon, desyncs into the closest enemy and fires with spoofed cam data",
     Callback = function(v)
         rage.enabled = v
         if v and not rageReady then
@@ -744,27 +697,22 @@ local weaponSlotDropdown = RageSub:AddDropdown({
 registerResync(weaponSlotDropdown, applyWeaponSlot)
 RageSub:AddSlider({
     Name = "Fire Rate", Min = 0.0001, Max = 0.05, Default = 0.0005, Suffix = "s", Flag = "rv_rage_firerate",
-    Description = "Seconds between shots (lower = faster)",
     Callback = function(v) rage.fireRate = v end,
 })
 RageSub:AddSlider({
     Name = "Max Distance", Min = 50, Max = 2000, Default = 500, Suffix = "", Flag = "rv_rage_dist",
-    Description = "Target lock range in studs",
     Callback = function(v) rage.maxDist = v end,
 })
 RageSub:AddToggle({
     Name = "Team Check", Default = true, Flag = "rv_rage_team",
-    Description = "Uses duel TeamID / TeamID attribute",
     Callback = function(v) rage.teamCheck = v end,
 })
 RageSub:AddToggle({
     Name = "Deflect Check", Default = true, Flag = "rv_rage_deflect",
-    Description = "Skips targets that are parrying with a Katana",
     Callback = function(v) rage.deflectCheck = v end,
 })
 RageSub:AddToggle({
     Name = "Random Offset", Default = true, Flag = "rv_rage_offset",
-    Description = "Small random jitter on the aim point",
     Callback = function(v) rage.randomOffset = v end,
 })
 
@@ -772,12 +720,10 @@ local DesyncSub = RageTab:AddSubTab("Desync")
 DesyncSub:AddSection("Desync")
 DesyncSub:AddToggle({
     Name = "Desync", Default = true, Flag = "rv_rage_desync",
-    Description = "Temporarily shift your character into the target for the shot, then restore",
     Callback = function(v) rage.desync = v end,
 })
 DesyncSub:AddToggle({
     Name = "Knife Adjust", Default = true, Flag = "rv_rage_knife",
-    Description = "Use a higher desync offset against knife users",
     Callback = function(v) rage.knifeAdjust = v end,
 })
 DesyncSub:AddParagraph({
@@ -821,7 +767,6 @@ local RapidSub = RageTab:AddSubTab("Rapid Hit")
 RapidSub:AddSection("Rapid Hit")
 RapidSub:AddToggle({
     Name = "Rapid Hit", Default = false, Flag = "rv_rapid",
-    Description = "Zeroes Shoot/Burst/Attack/HeavyAttack cooldowns on every item in the library",
     Callback = function(v)
         rapidHitEnabled = v
         if v then
@@ -1033,7 +978,7 @@ registerResync(tracerOriginDropdown, applyTracerOrigin)
 EspSub:AddSection("Behavior")
 EspSub:AddToggle({ Name = "Team Check", Default = false, Flag = "rv_espteam", Callback = function(v) esp.teamCheck = v end })
 EspSub:AddToggle({ Name = "Rainbow", Default = false, Flag = "rv_esprb", Callback = function(v) esp.rainbow = v end })
-EspSub:AddSlider({ Name = "Max Distance", Min = 0, Max = 5000, Default = 1000, Suffix = "m", Flag = "rv_espmaxdist", Description = "0 = unlimited", Callback = function(v) esp.maxDistance = v end })
+EspSub:AddSlider({ Name = "Max Distance", Min = 0, Max = 5000, Default = 1000, Suffix = "m", Flag = "rv_espmaxdist", Callback = function(v) esp.maxDistance = v end })
 EspSub:AddSection("Colors")
 EspSub:AddColorPicker({ Name = "Box Color", Default = esp.color, Flag = "rv_espcolor", Callback = function(c) esp.color = c end })
 EspSub:AddColorPicker({ Name = "Name Color", Default = esp.nameColor, Flag = "rv_espnamecolor", Callback = function(c) esp.nameColor = c end })
@@ -1361,7 +1306,6 @@ local EmoteSub = PlayerTab:AddSubTab("Emotes")
 EmoteSub:AddSection("Unlock All Emotes")
 EmoteSub:AddToggle({
     Name = "Unlock All Emotes", Default = false, Flag = "rv_emotes",
-    Description = "Lets you play every emote — even ones you don't own",
     Callback = function(v)
         emotesEnabled = v
         ApplyEmotes(v)
@@ -1533,7 +1477,6 @@ local SpoofSub = PlayerTab:AddSubTab("Spoof")
 SpoofSub:AddSection("Name Spoof")
 SpoofSub:AddToggle({
     Name = "Name Spoof", Default = true, Flag = "rv_spoof_name",
-    Description = "Shows a fake name for you and everyone else",
     Callback = function(v)
         spoofConfig.nameSpoof = v
         if v then
@@ -1591,7 +1534,6 @@ if type(setFpsCap) == "function" then
     local fpsCap = 240
     SettingsSub:AddToggle({
         Name = "Unlock FPS (Unlimited)", Default = false, Flag = "rv_fps_unlock",
-        Description = "Removes the FPS cap (infinite)",
         Callback = function(v)
             fpsUnlocked = v
             pcall(setFpsCap, v and 0 or fpsCap)
@@ -1600,7 +1542,6 @@ if type(setFpsCap) == "function" then
     })
     SettingsSub:AddSlider({
         Name = "FPS Cap", Min = 30, Max = 1000, Default = 240, Suffix = "", Flag = "rv_fps_cap",
-        Description = "Used when FPS is not unlocked",
         Callback = function(v)
             fpsCap = v
             if not fpsUnlocked then pcall(setFpsCap, v) end
@@ -1654,7 +1595,7 @@ local function Cleanup()
     table.clear(spoofConns)
     wsEnabled = false; jpEnabled = false; infJump = false
     flyEnabled = false; noclipEnabled = false; fullbright = false
-    aim.enabled = false; wb.enabled = false
+    aim.enabled = false
     UninstallSilentAim()
     for _, c in ipairs(HUB.conns) do pcall(function() c:Disconnect() end) end
     table.clear(HUB.conns)
