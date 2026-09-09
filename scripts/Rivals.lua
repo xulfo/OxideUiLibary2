@@ -169,9 +169,26 @@ local function IsVisible(part)
     return true
 end
 
-local function GetTarget()
-    if not aim.enabled or not hasHooks then return nil end
-    if math.random(1, 100) > aim.hitChance then return nil end
+-- Target cache: the full scan touches every Entity-tagged instance, so we
+-- only recompute it on a short throttle and reuse it everywhere (render loop,
+-- target line, status label, and both hooks). No more per-frame lag spikes.
+local targetCache = { part = nil, at = 0 }
+local TARGET_TTL = 0.05
+
+local function GetTarget(force)
+    if not aim.enabled or not hasHooks then
+        targetCache.part = nil
+        return nil
+    end
+    local now = os.clock()
+    if not force and now - targetCache.at < TARGET_TTL then
+        return targetCache.part
+    end
+    targetCache.at = now
+    if math.random(1, 100) > aim.hitChance then
+        targetCache.part = nil
+        return nil
+    end
     local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local ref = aim.useMouseCenter and UserInputService:GetMouseLocation() or center
     local bestPart, bestDist = nil, aim.fov
@@ -195,6 +212,7 @@ local function GetTarget()
             end
         end
     end
+    targetCache.part = bestPart
     return bestPart
 end
 
@@ -353,9 +371,16 @@ TargetSub:AddColorPicker({
 local targetStatus = TargetSub:AddLabel({ Text = "Target: none" })
 track(RunService.RenderStepped:Connect(function()
     if HUB.dead then return end
-    local t = GetTarget()
+    -- Only scan when there is something that actually needs the target
+    -- (line enabled, label visible, or aim on). Otherwise skip entirely.
+    local needTarget = aim.enabled and (aim.targetLine or true)
+    if not needTarget then
+        if targetLine then targetLine.Visible = false end
+        return
+    end
+    local t = GetTarget(false)
     if targetLine and hasDrawing then
-        targetLine.Visible = aim.targetLine and aim.enabled and t ~= nil
+        targetLine.Visible = aim.targetLine and t ~= nil
         if targetLine.Visible then
             targetLine.Color = aim.targetLineColor
             local sp, on = Camera:WorldToViewportPoint(t.Position)
