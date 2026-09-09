@@ -821,7 +821,6 @@ DigSub:AddDropdown({
     Options = { "Off", "Priority", "Only" },
     Default = "Off",
     Flag = "dig_rainbow",
-    Description = "Only = pick ONLY the deterministic 10x-value rainbow strands. Priority = rainbows first, then normal hay.",
     Callback = function(v)
         S.rainbowMode = v
         S._pickedHay = {}
@@ -850,7 +849,6 @@ DigSub:AddSlider({
     Max = 3,
     Default = 1,
     Suffix = "x",
-    Description = "2x/3x ignores the base 0.55s pick cooldown (server may throttle)",
     Flag = "dig_speed",
     Callback = function(v) S.digSpeed = v end,
 })
@@ -917,7 +915,6 @@ SpecialSub:AddToggle({
     Name = "Auto Needle (teleport + hand in)",
     Default = false,
     Flag = "needle_enabled",
-    Description = "Teleports to the needle as soon as it is revealed and hands it in for the 5000 reward",
     Callback = safeCallback(function(v)
         S.autoNeedle = v
         notifyOn("Auto Needle", v)
@@ -1022,7 +1019,6 @@ EspMain:AddToggle({
     Name = "Rainbow Hay ESP",
     Default = true,
     Flag = "esp_rainbow",
-    Description = "Highlights the 10x-value rainbow strands (computed positions)",
     Callback = function(v) S.espRainbow = v end,
 })
 EspMain:AddToggle({
@@ -1101,7 +1097,6 @@ MoveSub:AddToggle({
     Name = "Smooth Fly",
     Default = false,
     Flag = "fly",
-    Description = "Hold Space to fly up, Shift to fly down",
     Callback = function(v) S.fly = v end,
 })
 MoveSub:AddToggle({
