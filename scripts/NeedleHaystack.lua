@@ -174,6 +174,8 @@ local S = {
     autoGems        = false,
     autoNeedle      = false,
     collectWith     = "Hand",
+    autoBuyTools    = false,   -- buy tools with earned cash/gems (server-granted)
+    forceUnlock     = true,    -- client-side attribute spoof so the hotbar shows all tools
     -- Upgrades
     autoUpgrade     = false,
     maxUpgradeCost  = 100,
@@ -206,6 +208,9 @@ local S = {
     _needleCache    = {},
     _stateLabels    = {},
     _needleTarget   = nil,        -- from NeedleTargetChanged hook
+    _ownedTools     = {},         -- server-confirmed ownership (from ShopPurchaseResult)
+    _buyBudget      = {},         -- last cash/gems we attempted a buy with (anti-spam)
+    _buyCooldown    = 0,
 }
 
 local TRACK_COSTS = {
@@ -411,6 +416,98 @@ local function EquipTool(toolName)
 end
 
 -- ==============================================================================
+-- TOOL OWNERSHIP (server-authoritative)
+--
+-- The server ONLY honors tool usage (PitchforkDig / TntAction / VacuumAction /
+-- DeployDrone) when the tool was REALLY bought via BuyShopItem. Client attributes
+-- (TntOwned etc.) only unlock the hotbar visually - the server tracks purchases in
+-- its own state and charges real CASH (or GEMS for the Drone).
+--
+-- So we: (1) optionally spoof the attributes so the hotbar shows every tool,
+-- and (2) AUTO-BUY each tool the moment we have enough cash/gems so the tool
+-- actually WORKS. Confirmed signatures: BuyShopItem:FireServer("Tnt") ->
+-- ShopPurchaseResult (success, item, "CASH"/"GEMS").
+-- ==============================================================================
+local TOOL_BUY = {
+    Tnt       = { currency = "CASH" },
+    Pitchfork = { currency = "CASH" },
+    Vacuum    = { currency = "CASH" },
+    Drone     = { currency = "GEMS" },
+}
+
+local UNLOCK_ATTRS = {
+    "TntOwned", "PitchforkOwned", "DroneOwned", "VacuumOwned",
+    "InfiniteBagOwned", "NeedleOwned",
+    "PermanentTntOwned", "PermanentPitchforkOwned", "PermanentDroneOwned",
+    "PermanentVacuumOwned", "PermanentInfiniteBagOwned",
+}
+
+local function BuyToolNow(name)
+    Fire("BuyShopItem", name)
+end
+
+-- Server purchase result -> real ownership tracking
+track(function()
+    local spr = Remote("ShopPurchaseResult")
+    if not spr then return end
+    spr.OnClientEvent:Connect(function(ok, item)
+        local key = tostring(item or "")
+        if ok then
+            S._ownedTools[key] = true
+            Notify("Tools", key .. " unlocked! (server confirmed)", "Success", 3)
+        end
+    end)
+end)
+
+-- Visual unlock: keep the hotbar showing every tool (client-side only)
+track(function()
+    local function apply()
+        if not S.forceUnlock then return end
+        for _, k in ipairs(UNLOCK_ATTRS) do
+            pcall(function() LP:SetAttribute(k, true) end)
+        end
+    end
+    apply()
+    for _, k in ipairs(UNLOCK_ATTRS) do
+        pcall(function()
+            LP:GetAttributeChangedSignal(k):Connect(function()
+                if S.forceUnlock and LP:GetAttribute(k) ~= true then
+                    pcall(function() LP:SetAttribute(k, true) end)
+                end
+            end)
+        end)
+    end
+end)
+
+-- Auto-buy: try each unowned tool when our cash/gems grew meaningfully
+TrackLoop("buytools", function()
+    if not S.autoBuyTools then return end
+    local now = os.clock()
+    if now - S._buyCooldown < 1.2 then return end
+    local st = GetUpgradeState()
+    if not st then return end
+    local cash = tonumber(st.cash or 0)
+    local gems = tonumber(LP:GetAttribute("Gems") or 0)
+    for name, info in pairs(TOOL_BUY) do
+        if not S._ownedTools[name] then
+            local budget = info.currency == "CASH" and cash or gems
+            local last = S._buyBudget[name]
+            -- retry only when the budget grew by at least 0.5 (no spam while broke)
+            if not last or budget >= last + 0.5 then
+                S._buyBudget[name] = budget
+                S._buyCooldown = now
+                BuyToolNow(name)
+                return -- one attempt per tick, wait for the result
+            end
+        end
+    end
+end, 0.4)
+
+local function IsToolOwned(name)
+    return S._ownedTools[name] == true
+end
+
+-- ==============================================================================
 -- AUTO DIG (VERIFIED: PickHay(strandIndex, {}))
 -- ==============================================================================
 local function nextDigIndex()
@@ -465,17 +562,33 @@ TrackLoop("dig", function()
     local up = GetUpgradeState()
     local speedLvl = up and tonumber(up.levels and up.levels.Speed or 1) or 1
     local cooldown = (PICK_COOLDOWNS[speedLvl] or 0.3) / S.digSpeed
+    -- the pitchfork only digs radius-wise every ~0.85s (server cooldown)
+    local usePitchfork = S.collectWith == "Pitchfork" and IsToolOwned("Pitchfork")
+    if usePitchfork then cooldown = math.max(cooldown, 0.9) end
     if now - S._lastPick < cooldown then return end
 
-    EquipTool(S.collectWith)
+    -- auto-dig uses the Hand (PickHay) or an OWNED Pitchfork (PitchforkDig).
+    -- TNT / Drone / Vacuum are for manual play once bought.
+    EquipTool(usePitchfork and "Pitchfork" or "Hand")
     local idx = nextDigIndex()
     if not idx then return end
     S._pickedHay[idx] = true
-    Fire("PickHay", idx, {})
+    if usePitchfork then
+        -- pitchfork reach is 4.2 studs: get next to the strand first
+        local pos = strandPosition(idx)
+        local hrp = GetHRP()
+        if pos and hrp and (pos - hrp.Position).Magnitude > 3.5 then
+            TeleportTo(pos + Vector3.new(0, 1, 0))
+            return -- fire next tick once we're in range
+        end
+        Fire("PitchforkDig", idx)
+    else
+        Fire("PickHay", idx, {})
+    end
     S._lastPick = now
 
     -- rotate the character around the pile when digging normally
-    if S.rainbowMode == "Off" and S.digMode ~= "Random" then
+    if S.rainbowMode == "Off" and S.digMode ~= "Random" and not usePitchfork then
         S._digAngle = S._digAngle + 0.12
         local radius = S.digMode == "Center" and 4
             or (S.digMode == "Ring" and S.digRadius or (8 + math.sin(S._digAngle) * 6))
@@ -939,6 +1052,47 @@ SpecialSub:AddDropdown({
         EquipTool(v)
     end,
 })
+
+local ToolsSub = AutoTab:AddSubTab("Auto Buy Tools")
+ToolsSub:AddToggle({
+    Name = "Auto Buy Tools (server-granted)",
+    Default = false,
+    Flag = "tools_autobuy",
+    Callback = safeCallback(function(v)
+        S.autoBuyTools = v
+        notifyOn("Auto Buy Tools", v)
+    end),
+})
+ToolsSub:AddToggle({
+    Name = "Unlock All Tools (Visual)",
+    Default = true,
+    Flag = "tools_visual",
+    Callback = function(v) S.forceUnlock = v end,
+})
+ToolsSub:AddButton({
+    Name = "Buy TNT",
+    Callback = safeCallback(function() BuyToolNow("Tnt") end),
+})
+ToolsSub:AddButton({
+    Name = "Buy Pitchfork",
+    Callback = safeCallback(function() BuyToolNow("Pitchfork") end),
+})
+ToolsSub:AddButton({
+    Name = "Buy Vacuum",
+    Callback = safeCallback(function() BuyToolNow("Vacuum") end),
+})
+ToolsSub:AddButton({
+    Name = "Buy Drone (Gems)",
+    Callback = safeCallback(function() BuyToolNow("Drone") end),
+})
+local toolStatus = ToolsSub:AddLabel({ Text = "Server-owned: none yet" })
+TrackLoop("toolstatus", function()
+    local owned = {}
+    for name, _ in pairs(S._ownedTools) do owned[#owned + 1] = name end
+    table.sort(owned)
+    local txt = #owned > 0 and table.concat(owned, ", ") or "none yet (auto-buy buys them as soon as affordable)"
+    pcall(function() toolStatus:Set("Server-owned: " .. txt) end)
+end, 1)
 
 local UpgTab = Window:AddTab({ Name = "Upgrades", Subtitle = "Buy", Icon = "star" })
 
