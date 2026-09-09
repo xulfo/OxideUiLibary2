@@ -193,6 +193,7 @@ local S = {
     fullbright      = false,
     -- internal
     _digAngle       = 0,
+    _selling        = false,
     _lastSell       = 0,
     _lastGems       = 0,
     _lastNeedle     = 0,
@@ -455,6 +456,7 @@ end
 
 TrackLoop("dig", function()
     if not S.autoDig then return end
+    if S._selling then return end -- let auto-sell finish before digging again
     local st = GetHayState()
     if st and st.needleClaimed then
         return -- round finished
@@ -513,12 +515,19 @@ TrackLoop("sell", function()
     if not st then return end
     local held = tonumber(st.held or 0)
     if held < S.sellThreshold then return end
-    local hrp = GetHRP()
-    if hrp and (hrp.Position - SELL_POS).Magnitude > 14 then
-        TweenTo(SELL_POS + Vector3.new(0, 0, 2), S.walkSpeed)
-        return
-    end
-    SellNow()
+
+    -- pause auto-dig while the character is at the sell cow (no wasted picks)
+    S._selling = true
+    local ok, err = pcall(function()
+        local hrp = GetHRP()
+        if hrp and (hrp.Position - SELL_POS).Magnitude > 14 then
+            TeleportTo(SELL_POS + Vector3.new(0, 0, 2))
+            task.wait(0.8)
+        end
+        SellNow()
+    end)
+    S._selling = false
+    if not ok then warn("[Oxide NeedleHaystack] sell error: " .. tostring(err)) end
     S._lastSell = now
 end, 0.3)
 
