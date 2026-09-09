@@ -14,7 +14,6 @@ _G.OxideNeedleHaystack = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackHighlight(h) if h then table.insert(HUB.highlights, h) end; return h end
 
--- interval: 0 (or nil) = every frame, >0 = run at most every N seconds
 local function TrackLoop(id, fn, interval)
     HUB.loops[id] = true
     task.spawn(function()
@@ -30,13 +29,12 @@ local function TrackLoop(id, fn, interval)
         end
     end)
 end
-
 local function KillLoop(id)
     HUB.loops[id] = nil
 end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | Kapitel 1 (Bauernhaus)",
+    Name = "Oxide HUB | Search For The Needle",
     LoadingAnimation = true,
     LoadingText = "Oxide",
     LoadingDuration = 2.0,
@@ -61,7 +59,7 @@ local UserInputService    = game:GetService("UserInputService")
 local Workspace           = game:GetService("Workspace")
 local Lighting            = game:GetService("Lighting")
 local TweenService        = game:GetService("TweenService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
+local VirtualUser         = game:GetService("VirtualUser")
 
 local LP          = Players.LocalPlayer
 local LocalPlayer = LP
@@ -101,31 +99,28 @@ local function notifyOn(name, on)
 end
 
 -- ==============================================================================
--- GAME KNOWLEDGE (from decompiled NeedleHaystack.Config / Surface)
+-- GAME MODULES (client-replicated -> exact server math)
 -- ==============================================================================
-local NH_FOLDER = "NeedleHaystack"
-local PILE_CENTER   = Vector3.new(-199.18434, 2.1, 30.241207)
-local PILE_RADIUS   = 17
-local PILE_HEIGHT   = 12
-local PROFILE_POWER = 1.35
-local SELL_POS      = Vector3.new(-161.28688049316406, 6.126363754272461, 56.90555191040039)
+local GameConfig, GameSurface
+do
+    local okC, cfg = pcall(require, RS:WaitForChild("NeedleHaystack"):WaitForChild("Config", 10))
+    if okC and type(cfg) == "table" then GameConfig = cfg end
+    local okS, surf = pcall(require, RS:FindFirstChild("NeedleHaystack") and RS.NeedleHaystack:FindFirstChild("Surface"))
+    if okS and type(surf) == "table" then GameSurface = surf end
+end
+
+local PILE_CENTER  = GameConfig and GameConfig.PILE_CENTER or Vector3.new(-199.18434, 2.1, 30.241207)
+local PILE_RADIUS  = GameConfig and GameConfig.PILE_RADIUS or 17
+local RENDERED_HAY = GameConfig and GameConfig.RENDERED_HAY or 13000
+local TOTAL_HAY    = GameConfig and GameConfig.TOTAL_HAY or 100000
+local SELL_POS     = Vector3.new(-161.28688049316406, 6.126363754272461, 56.90555191040039)
 
 local function GetNH()
-    return RS:FindFirstChild(NH_FOLDER)
+    return RS:FindFirstChild("NeedleHaystack")
 end
 local function Remote(name)
     local nh = GetNH()
     return nh and nh:FindFirstChild(name) or nil
-end
-
--- dome surface height at horizontal radius r (absolute Y, pile base at PILE_CENTER.Y)
-local function surfaceHeight(r)
-    local f = 1 - (r / PILE_RADIUS) * (r / PILE_RADIUS)
-    if f <= 0 then return 0 end
-    return PILE_CENTER.Y + PILE_HEIGHT * (f ^ PROFILE_POWER)
-end
-local function surfacePoint(angle, radius)
-    return PILE_CENTER + Vector3.new(math.cos(angle) * radius, surfaceHeight(radius) - PILE_CENTER.Y, math.sin(angle) * radius)
 end
 
 local function GetHayState()
@@ -149,12 +144,18 @@ local function Fire(name, ...)
     local args = { ... }
     pcall(function() r:FireServer(unpack(args)) end)
 end
-local function Invoke(name, ...)
-    local r = Remote(name)
-    if not r then return nil end
-    local args = { ... }
-    local ok, res = pcall(function() return r:InvokeServer(unpack(args)) end)
-    if ok then return res end
+
+-- Exact position of a rendered hay strand (matches the server's placement).
+-- Passing p97=true skips the dug-depth subtraction -> full surface position.
+local function strandPosition(index)
+    if GameSurface and GameSurface.strandCFrame then
+        local ok, cf = pcall(function()
+            return GameSurface.strandCFrame(index, RENDERED_HAY, 11, 0, 0, true, 0, false)
+        end)
+        if ok and typeof(cf) == "CFrame" then
+            return cf.Position
+        end
+    end
     return nil
 end
 
@@ -166,16 +167,17 @@ local S = {
     autoDig         = false,
     digMode         = "Spiral",   -- Spiral / Ring / Center / Random
     digRadius       = 8,
-    digPause        = 0.62,       -- matches base PICK_COOLDOWN (0.55)
-    useGameInput    = true,       -- mouse-hold through the game's own client path
+    digSpeed        = 1,          -- 1 = base cooldown, 2 = as fast as the server allows
+    rainbowMode     = "Off",      -- Off / Priority / Only
     autoSell        = false,
-    sellThreshold   = 20,         -- sell when held >= threshold
+    sellThreshold   = 20,
     autoGems        = false,
+    autoNeedle      = false,
     collectWith     = "Hand",
     -- Upgrades
     autoUpgrade     = false,
     maxUpgradeCost  = 100,
-    upgradeTracks   = {},         -- track -> enabled
+    upgradeTracks   = {},
     -- ESP
     espEnabled      = false,
     espRainbow      = true,
@@ -193,11 +195,16 @@ local S = {
     _digAngle       = 0,
     _lastSell       = 0,
     _lastGems       = 0,
+    _lastNeedle     = 0,
+    _lastPick       = 0,
+    _rainbowList    = nil,        -- cached [index] = position
+    _rainbowCacheT  = 0,
+    _rainbowNext    = 1,
+    _pickedHay      = {},         -- strand indices we already picked this run
     _gemCache       = {},
     _needleCache    = {},
-    _rainbowCache   = {},
-    _lastStateTick  = 0,
     _stateLabels    = {},
+    _needleTarget   = nil,        -- from NeedleTargetChanged hook
 }
 
 local TRACK_COSTS = {
@@ -219,16 +226,57 @@ local TRACK_COSTS = {
     VacuumRuntime     = { 0, 5, 12.5, 28, 60, 120 },
 }
 
--- tool identifiers published via HeldToolState:FireServer(tool, phase)
+-- Speed upgrade level -> pick cooldown seconds (from Config.UPGRADE_TRACKS.Speed)
+local PICK_COOLDOWNS = { 0.55, 0.5, 0.45, 0.4, 0.35, 0.3 }
+
 local TOOL_NAMES = {
     Hand = "hand", TNT = "tnt", Pitchfork = "pitchfork",
     Drone = "drone", Vacuum = "vacuum", Needle = "needle",
 }
 
 -- ==============================================================================
--- ESP (Highlight-based, cleaned up on toggle-off / unload)
+-- RAINBOW STRAND INDEX (deterministic, mirrors Config.isRainbow)
 -- ==============================================================================
-local ESP_COLOR = Color3.fromRGB(120, 255, 120)
+local function isRainbowIndex(index)
+    if GameConfig and type(GameConfig.isRainbow) == "function" then
+        local ok, res = pcall(GameConfig.isRainbow, index)
+        if ok then return res == true end
+    end
+    local v = math.sin(index * 7.31413 + 8242026 * 0.00037 + 1913.77) * 24634.6345
+    return (v - math.floor(v)) < 0.0025
+end
+
+-- Build the full rainbow list once: { {index=..., pos=Vector3}, ... } sorted by angle
+local function BuildRainbowList()
+    local out = {}
+    for i = 1, RENDERED_HAY do
+        if isRainbowIndex(i) then
+            local pos = strandPosition(i)
+            if pos then
+                table.insert(out, { index = i, pos = pos })
+            end
+        end
+    end
+    table.sort(out, function(a, b)
+        return math.atan2(a.pos.X - PILE_CENTER.X, a.pos.Z - PILE_CENTER.Z)
+            < math.atan2(b.pos.X - PILE_CENTER.X, b.pos.Z - PILE_CENTER.Z)
+    end)
+    return out
+end
+
+local function GetRainbowList()
+    local now = os.clock()
+    if not S._rainbowList or now - S._rainbowCacheT > 30 then
+        S._rainbowCacheT = now
+        S._rainbowList = BuildRainbowList()
+        S._rainbowNext = 1
+    end
+    return S._rainbowList
+end
+
+-- ==============================================================================
+-- ESP (Highlight-based)
+-- ==============================================================================
 local RAINBOW_COLOR = Color3.fromRGB(255, 90, 255)
 local NEEDLE_COLOR = Color3.fromRGB(255, 60, 60)
 local GEM_COLOR = Color3.fromRGB(90, 190, 255)
@@ -244,7 +292,7 @@ local function espPart(part, color)
     if not part or not part.Parent then return nil end
     local h = Instance.new("Highlight")
     h.Name = "OxideNeedleEsp"
-    h.FillColor = color or ESP_COLOR
+    h.FillColor = color or RAINBOW_COLOR
     h.OutlineColor = Color3.new(1, 1, 1)
     h.FillTransparency = 0.45
     h.OutlineTransparency = 0
@@ -253,64 +301,30 @@ local function espPart(part, color)
     return h
 end
 
-local function highlightList(list, color)
-    if not S.espEnabled then return end
-    for _, part in ipairs(list) do
-        if part and part.Parent then
-            local existing = part:FindFirstChild("OxideNeedleEsp")
-            if not existing then espPart(part, color) end
+-- Highlight the rendered hay part sitting at a computed strand position.
+local function espAtPosition(pos, color)
+    if not pos then return end
+    for _, part in ipairs(Workspace:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name:lower():find("hay", 1, true) and not part:FindFirstChild("OxideNeedleEsp") then
+            if (part.Position - pos).Magnitude < 1.2 then
+                espPart(part, color)
+                return
+            end
         end
     end
-end
-
--- Rainbow hay detection: the game marks ~1/400 strands as rainbow (10x value).
--- Strands are deterministic by index (isRainbow in Config), but indexes are not
--- exposed on the parts, so we detect by color signature instead.
-local function isRainbowPart(part)
-    if part:IsA("BasePart") and part.Transparency < 0.9 then
-        local c = part.Color
-        local mx = math.max(c.R, c.G, c.B)
-        local mn = math.min(c.R, c.G, c.B)
-        local sat = mx > 0 and (mx - mn) / mx or 0
-        -- rainbow strands are vivid + multi-colored, hay is brownish/golden
-        if sat > 0.55 and c.B > 0.4 then
-            return true
-        end
-        -- pink/purple hues strongly suggest rainbow
-        if c.R > 0.8 and c.B > 0.6 and c.G < 0.5 then
-            return true
-        end
-    end
-    return false
 end
 
 TrackLoop("esp", function()
     if not S.espEnabled then return end
-    -- rainbow hay (cached, rescanned every 6s to limit cost)
     local now = os.clock()
-    if S.espRainbow and now - (S._rainbowCache.t or 0) > 6 then
-        S._rainbowCache.t = now
-        S._rainbowCache.parts = {}
-        local pile = Workspace:FindFirstChild("Hay Pile")
-        local roots = { Workspace }
-        if pile then roots = { pile } end
-        for _, root in ipairs(roots) do
-            local c = 0
-            for _, part in ipairs(root:GetDescendants()) do
-                if part:IsA("BasePart") and part.Name:lower():find("hay", 1, true) then
-                    if isRainbowPart(part) then
-                        table.insert(S._rainbowCache.parts, part)
-                    end
-                    c = c + 1
-                    if c > 4000 then break end
-                end
-            end
+    if S.espRainbow then
+        local list = GetRainbowList()
+        local perFrame = math.min(6, #list)
+        for k = 1, perFrame do
+            local entry = list[(now * 17 + k * 7) % #list + 1]
+            if entry then espAtPosition(entry.pos, RAINBOW_COLOR) end
         end
     end
-    if S.espRainbow then
-        highlightList(S._rainbowCache.parts or {}, RAINBOW_COLOR)
-    end
-    -- gems
     if S.espGems and now - (S._gemCache.t or 0) > 2 then
         S._gemCache.t = now
         S._gemCache.parts = {}
@@ -320,27 +334,38 @@ TrackLoop("esp", function()
                 table.insert(S._gemCache.parts, part)
             end
         end
-    end
-    if S.espGems then
-        highlightList(S._gemCache.parts or {}, GEM_COLOR)
-    end
-    -- needle
-    if S.espNeedle then
-        local st = GetHayState()
-        if st and (st.needleRevealed or st.needleClaimed == false) then
-            if now - (S._needleCache.t or 0) > 2 then
-                S._needleCache.t = now
-                S._needleCache.parts = {}
-                for _, part in ipairs(Workspace:GetDescendants()) do
-                    if part.Name:lower():find("needle", 1, true) and part:IsA("BasePart") then
-                        table.insert(S._needleCache.parts, part)
-                    end
-                end
+        for _, part in ipairs(S._gemCache.parts or {}) do
+            if part.Parent and not part:FindFirstChild("OxideNeedleEsp") then
+                espPart(part, GEM_COLOR)
             end
-            highlightList(S._needleCache.parts or {}, NEEDLE_COLOR)
         end
     end
-end, 0.5)
+    if S.espNeedle then
+        local st = GetHayState()
+        if st and (st.needleRevealed or S._needleTarget) then
+            local target = S._needleTarget
+            if not target then
+                if now - (S._needleCache.t or 0) > 2 then
+                    S._needleCache.t = now
+                    S._needleCache.parts = {}
+                    for _, part in ipairs(Workspace:GetDescendants()) do
+                        if part:IsA("BasePart") and part.Name:lower():find("needle", 1, true) then
+                            table.insert(S._needleCache.parts, part)
+                        end
+                    end
+                end
+                local parts = S._needleCache.parts or {}
+                for _, part in ipairs(parts) do
+                    if part.Parent and not part:FindFirstChild("OxideNeedleEsp") then
+                        espPart(part, NEEDLE_COLOR)
+                    end
+                end
+            else
+                espAtPosition(target, NEEDLE_COLOR)
+            end
+        end
+    end
+end, 0.4)
 
 -- ==============================================================================
 -- MOVEMENT
@@ -376,38 +401,7 @@ local function TeleportTo(position)
 end
 
 -- ==============================================================================
--- CONFIG RESYNC (re-apply loaded flags to live state)
--- ==============================================================================
-local function ResyncAll()
-    local ok, err = pcall(function()
-        S.autoDig       = Window:Get("dig_enabled", false)
-        S.digMode       = Window:Get("dig_mode", "Spiral")
-        S.digRadius     = Window:Get("dig_radius", 8)
-        S.useGameInput  = Window:Get("dig_gameinput", true)
-        S.autoSell      = Window:Get("sell_enabled", false)
-        S.sellThreshold = Window:Get("sell_threshold", 20)
-        S.autoGems      = Window:Get("gems_enabled", false)
-        S.collectWith   = Window:Get("collect_with", "Hand")
-        S.autoUpgrade   = Window:Get("upg_enabled", false)
-        S.maxUpgradeCost = Window:Get("upg_maxcost", 100)
-        S.espEnabled    = Window:Get("esp_enabled", false)
-        S.espRainbow    = Window:Get("esp_rainbow", true)
-        S.espNeedle     = Window:Get("esp_needle", true)
-        S.espGems       = Window:Get("esp_gems", true)
-        S.walkSpeed     = Window:Get("walkspeed", 16)
-        S.jumpPower     = Window:Get("jumppower", 50)
-        S.infiniteJump  = Window:Get("infjump", false)
-        S.fly           = Window:Get("fly", false)
-        S.noclip        = Window:Get("noclip", false)
-        S.antiAFK       = Window:Get("antiafk", false)
-        S.fullbright    = Window:Get("fullbright", false)
-        if not S.espEnabled then clearEsp() end
-    end)
-    if not ok then warn("[Oxide NeedleHaystack] ResyncAll: " .. tostring(err)) end
-end
-
--- ==============================================================================
--- TOOLS (equip via the game's HeldToolState publish remote)
+-- TOOLS
 -- ==============================================================================
 local function EquipTool(toolName)
     local name = TOOL_NAMES[toolName]
@@ -416,76 +410,87 @@ local function EquipTool(toolName)
 end
 
 -- ==============================================================================
--- AUTO DIG
+-- AUTO DIG (VERIFIED: PickHay(strandIndex, {}))
 -- ==============================================================================
-local function standAt(angle, radius)
-    -- stand on the pile surface just inside the dig point so the game's reach
-    -- validation (HOLD_DISTANCE 3.6 / INTERACT_DISTANCE 20) always passes
-    local pos = surfacePoint(angle, radius)
+local function nextDigIndex()
     local hrp = GetHRP()
-    if hrp and (hrp.Position - pos).Magnitude > 12 then
-        TeleportTo(pos + Vector3.new(0, 2.5, 0))
-    end
-end
+    local hrpPos = hrp and hrp.Position or PILE_CENTER
 
-local function nextDigPoint()
-    local angle = S._digAngle
-    S._digAngle = S._digAngle + (S.digMode == "Random" and math.random() * 2 or 0.75)
-    local radius
-    if S.digMode == "Center" then
-        radius = math.min(2 + math.random() * 2, PILE_RADIUS - 1)
-    elseif S.digMode == "Ring" then
-        radius = S.digRadius
-    elseif S.digMode == "Random" then
-        radius = 1 + math.random() * (PILE_RADIUS - 2)
-    else -- Spiral
-        radius = 2 + ((S._digAngle / (math.pi * 2)) % 1) * (PILE_RADIUS - 3)
+    -- Rainbow mode: always pick the next rainbow strand
+    if S.rainbowMode ~= "Off" then
+        local list = GetRainbowList()
+        for tries = 1, #list do
+            local entry = list[S._rainbowNext]
+            S._rainbowNext = S._rainbowNext % #list + 1
+            if entry and not S._pickedHay[entry.index] then
+                -- move close to the rainbow strand so the pick always lands
+                if (entry.pos - hrpPos).Magnitude > 10 then
+                    TeleportTo(entry.pos + Vector3.new(0, 2, 0))
+                end
+                return entry.index
+            end
+        end
+        if S.rainbowMode == "Only" then
+            return nil -- all rainbows picked this pass; wait for re-scan
+        end
     end
-    return surfacePoint(angle, math.clamp(radius, 1, PILE_RADIUS - 1))
-end
 
-local function DigOnceDirect()
-    -- direct PickHay fire at the surface point (works when the executor's input
-    -- simulation is blocked; the server still validates reach + dig grid)
-    local pos = nextDigPoint()
-    standAt(S._digAngle, 4)
-    Fire("PickHay", pos)
-    return pos
-end
-
-local function DigOnceGameInput()
-    -- Let the game's own client controller do the picking: aim the camera at a
-    -- surface point and hold mouse1 there. This uses the exact validated path
-    -- the real player uses, so it can never send a malformed pick.
-    local pos = nextDigPoint()
-    standAt(S._digAngle, 4)
-    local cam = GetCamera()
-    local hrp = GetHRP()
-    if not cam or not hrp then return end
-    cam.CFrame = CFrame.new(cam.CFrame.Position, pos)
-    task.wait(0.08)
-    local screen = cam:WorldToScreenPoint(pos)
-    if screen.Z > 0 then
-        VirtualInputManager:SendMouseButtonEvent(screen.X, screen.Y, 0, true, game, 1)
-        task.wait(0.16)
-        VirtualInputManager:SendMouseButtonEvent(screen.X, screen.Y, 0, false, game, 1)
+    -- normal dig: pick a strand near the character
+    for tries = 1, 24 do
+        local idx = math.random(1, RENDERED_HAY)
+        if not S._pickedHay[idx] then
+            local pos = strandPosition(idx)
+            if pos and (pos - hrpPos).Magnitude < 14 then
+                return idx
+            end
+        end
     end
+    -- fall back to any strand we haven't picked
+    for tries = 1, 40 do
+        local idx = math.random(1, RENDERED_HAY)
+        if not S._pickedHay[idx] then return idx end
+    end
+    return math.random(1, RENDERED_HAY)
 end
 
 TrackLoop("dig", function()
     if not S.autoDig then return end
     local st = GetHayState()
     if st and st.needleClaimed then
-        -- round finished / needle handed in; nothing left to dig
-        return
+        return -- round finished
     end
+    local now = os.clock()
+    local up = GetUpgradeState()
+    local speedLvl = up and tonumber(up.levels and up.levels.Speed or 1) or 1
+    local cooldown = (PICK_COOLDOWNS[speedLvl] or 0.3) / S.digSpeed
+    if now - S._lastPick < cooldown then return end
+
     EquipTool(S.collectWith)
-    if S.useGameInput then
-        DigOnceGameInput()
-    else
-        DigOnceDirect()
+    local idx = nextDigIndex()
+    if not idx then return end
+    S._pickedHay[idx] = true
+    Fire("PickHay", idx, {})
+    S._lastPick = now
+
+    -- rotate the character around the pile when digging normally
+    if S.rainbowMode == "Off" and S.digMode ~= "Random" then
+        S._digAngle = S._digAngle + 0.12
+        local radius = S.digMode == "Center" and 4
+            or (S.digMode == "Ring" and S.digRadius or (8 + math.sin(S._digAngle) * 6))
+        local pos = PILE_CENTER + Vector3.new(math.cos(S._digAngle) * radius, 2, math.sin(S._digAngle) * radius)
+        local hrp = GetHRP()
+        if hrp and (hrp.Position - pos).Magnitude > 16 then
+            TeleportTo(pos)
+        end
     end
-    task.wait(S.digPause)
+
+    -- keep the picked set bounded (13000 entries is fine, but trim old rounds)
+    local n = 0
+    for _ in pairs(S._pickedHay) do
+        n = n + 1
+        if n > 8000 then break end
+    end
+    if n > 8000 then S._pickedHay = {} end
 end, 0.05)
 
 -- ==============================================================================
@@ -518,7 +523,7 @@ TrackLoop("sell", function()
 end, 0.3)
 
 -- ==============================================================================
--- AUTO COLLECT GEMS
+-- AUTO COLLECT GEMS (hook GemSpawned + workspace scan)
 -- ==============================================================================
 local function fireCollectGem(part)
     if not part or not part.Parent then return end
@@ -532,7 +537,7 @@ track(function()
     if not gemSpawned then return end
     gemSpawned.OnClientEvent:Connect(function(...)
         local a = { ... }
-        local target = nil
+        local target
         for _, v in ipairs(a) do
             if typeof(v) == "Instance" then target = v; break end
             if typeof(v) == "Vector3" and not target then
@@ -541,11 +546,9 @@ track(function()
         end
         if target then
             table.insert(S._gemCache.parts or {}, target)
-            if S.autoGems then
+            if S.autoGems and typeof(target) == "Instance" and target:IsA("BasePart") then
                 task.spawn(function()
-                    if typeof(target) == "Instance" and target:IsA("BasePart") then
-                        fireCollectGem(target)
-                    end
+                    fireCollectGem(target)
                 end)
             end
         end
@@ -569,12 +572,64 @@ TrackLoop("gems", function()
             end
         end
     end
-    if best and bestDist <= 25 then
-        fireCollectGem(best)
-    elseif best then
-        TweenTo(best.Position, S.walkSpeed)
+    if best then
+        if bestDist <= 25 then
+            fireCollectGem(best)
+        else
+            TeleportTo(best.Position)
+        end
     end
 end, 0.5)
+
+-- ==============================================================================
+-- AUTO NEEDLE (teleport to the needle + hand it in when revealed)
+-- ==============================================================================
+track(function()
+    local ntc = Remote("NeedleTargetChanged")
+    if not ntc then return end
+    ntc.OnClientEvent:Connect(function(...)
+        local a = { ... }
+        for _, v in ipairs(a) do
+            if typeof(v) == "Vector3" then
+                S._needleTarget = v
+            elseif typeof(v) == "Instance" and v:IsA("BasePart") then
+                S._needleTarget = v.Position
+            end
+        end
+    end)
+end)
+
+TrackLoop("needle", function()
+    if not S.autoNeedle then return end
+    local now = os.clock()
+    if now - S._lastNeedle < 1.5 then return end
+    S._lastNeedle = now
+    local st = GetHayState()
+    if not st or st.needleClaimed then return end
+    local target = S._needleTarget
+    if not target and st.needleRevealed then
+        -- scan workspace for the needle part
+        local found
+        for _, part in ipairs(Workspace:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name:lower():find("needle", 1, true) then
+                found = part
+                break
+            end
+        end
+        if found then target = found.Position end
+    end
+    if not target then return end
+    local hrp = GetHRP()
+    if not hrp then return end
+    if (hrp.Position - target).Magnitude > 8 then
+        TeleportTo(target + Vector3.new(0, 3, 0))
+        return
+    end
+    -- in range: hand in the needle
+    Fire("NeedleHandIn")
+    Notify("Needle", "Needle found - handed it in!", "Success", 3)
+    S._lastNeedle = now + 5
+end, 0.6)
 
 -- ==============================================================================
 -- AUTO UPGRADE
@@ -688,11 +743,7 @@ do
             if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
             if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, 1, 0) end
             if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.new(0, 1, 0) end
-            if dir.Magnitude > 0 then
-                flyBodyVel.Velocity = dir.Unit * S.walkSpeed * 3
-            else
-                flyBodyVel.Velocity = Vector3.zero
-            end
+            flyBodyVel.Velocity = dir.Magnitude > 0 and (dir.Unit * S.walkSpeed * 3) or Vector3.zero
         elseif flyOn then
             StopFly()
         end
@@ -759,7 +810,23 @@ DigSub:AddToggle({
     Callback = safeCallback(function(v)
         S.autoDig = v
         notifyOn("Auto Dig", v)
+        if v then
+            S._pickedHay = {}
+            S._rainbowNext = 1
+        end
     end),
+})
+DigSub:AddDropdown({
+    Name = "Rainbow Farmer",
+    Options = { "Off", "Priority", "Only" },
+    Default = "Off",
+    Flag = "dig_rainbow",
+    Description = "Only = pick ONLY the deterministic 10x-value rainbow strands. Priority = rainbows first, then normal hay.",
+    Callback = function(v)
+        S.rainbowMode = v
+        S._pickedHay = {}
+        S._rainbowNext = 1
+    end,
 })
 DigSub:AddDropdown({
     Name = "Dig Target Mode",
@@ -778,25 +845,19 @@ DigSub:AddSlider({
     Callback = function(v) S.digRadius = v end,
 })
 DigSub:AddSlider({
-    Name = "Pick Speed",
-    Min = 4,
-    Max = 25,
-    Default = 15,
-    Suffix = "picks/s",
-    Flag = "dig_pause",
-    Callback = function(v) S.digPause = math.clamp(1 / v, 0.04, 0.25) end,
-})
-DigSub:AddToggle({
-    Name = "Use Game Input (mouse hold)",
-    Default = true,
-    Flag = "dig_gameinput",
-    Description = "Pick through the game's own input path (most reliable). Off = direct PickHay fire.",
-    Callback = function(v) S.useGameInput = v end,
+    Name = "Dig Speed",
+    Min = 1,
+    Max = 3,
+    Default = 1,
+    Suffix = "x",
+    Description = "2x/3x ignores the base 0.55s pick cooldown (server may throttle)",
+    Flag = "dig_speed",
+    Callback = function(v) S.digSpeed = v end,
 })
 DigSub:AddButton({
     Name = "Teleport To Hay Pile",
     Callback = safeCallback(function()
-        TeleportTo(surfacePoint(0, 4) + Vector3.new(0, 2, 0))
+        TeleportTo(PILE_CENTER + Vector3.new(4, 2, 4))
         Notify("Teleport", "Moved to the hay pile", "Success")
     end),
 })
@@ -826,7 +887,7 @@ SellSub:AddButton({
         task.spawn(function()
             local hrp = GetHRP()
             if hrp and (hrp.Position - SELL_POS).Magnitude > 14 then
-                TweenTo(SELL_POS + Vector3.new(0, 0, 2), S.walkSpeed)
+                TeleportTo(SELL_POS + Vector3.new(0, 0, 2))
                 task.wait(1.2)
             end
             local n = SellNow()
@@ -842,8 +903,8 @@ SellSub:AddButton({
     end),
 })
 
-local GemSub = AutoTab:AddSubTab("Gems & Tools")
-GemSub:AddToggle({
+local SpecialSub = AutoTab:AddSubTab("Gems & Needle")
+SpecialSub:AddToggle({
     Name = "Auto Collect Gems",
     Default = false,
     Flag = "gems_enabled",
@@ -852,7 +913,17 @@ GemSub:AddToggle({
         notifyOn("Auto Collect Gems", v)
     end),
 })
-GemSub:AddDropdown({
+SpecialSub:AddToggle({
+    Name = "Auto Needle (teleport + hand in)",
+    Default = false,
+    Flag = "needle_enabled",
+    Description = "Teleports to the needle as soon as it is revealed and hands it in for the 5000 reward",
+    Callback = safeCallback(function(v)
+        S.autoNeedle = v
+        notifyOn("Auto Needle", v)
+    end),
+})
+SpecialSub:AddDropdown({
     Name = "Collect With",
     Options = { "Hand", "TNT", "Pitchfork", "Drone", "Vacuum" },
     Default = "Hand",
@@ -951,14 +1022,13 @@ EspMain:AddToggle({
     Name = "Rainbow Hay ESP",
     Default = true,
     Flag = "esp_rainbow",
-    Description = "Highlights 10x-value rainbow strands",
+    Description = "Highlights the 10x-value rainbow strands (computed positions)",
     Callback = function(v) S.espRainbow = v end,
 })
 EspMain:AddToggle({
     Name = "Needle ESP",
     Default = true,
     Flag = "esp_needle",
-    Description = "Highlights the needle when it is in the pile",
     Callback = function(v) S.espNeedle = v end,
 })
 EspMain:AddToggle({
@@ -969,13 +1039,14 @@ EspMain:AddToggle({
 })
 
 local StatsSub = EspTab:AddSubTab("Stats")
-local function addStat(label)
-    local lbl = StatsSub:AddLabel({ Text = label })
+local function addStat(text)
+    local lbl = StatsSub:AddLabel({ Text = text })
     table.insert(S._stateLabels, lbl)
     return lbl
 end
 addStat("Cash: --  |  Holding: --")
 addStat("Pile remaining: --  |  Needle: --")
+addStat("Rainbow strands: --")
 
 TrackLoop("stats", function()
     local up = GetUpgradeState()
@@ -990,13 +1061,11 @@ TrackLoop("stats", function()
         elseif hay.needleRevealed then needle = "Revealed!"
         else needle = "Hidden" end
     end
+    local rb = #GetRainbowList()
     local ok1, ok2 = pcall(function()
-        if S._stateLabels[1] then
-            S._stateLabels[1]:Set("Cash: " .. cash .. "  |  Holding: " .. held)
-        end
-        if S._stateLabels[2] then
-            S._stateLabels[2]:Set("Pile remaining: " .. rem .. "  |  Needle: " .. needle)
-        end
+        if S._stateLabels[1] then S._stateLabels[1]:Set("Cash: " .. cash .. "  |  Holding: " .. held) end
+        if S._stateLabels[2] then S._stateLabels[2]:Set("Pile remaining: " .. rem .. "  |  Needle: " .. needle) end
+        if S._stateLabels[3] then S._stateLabels[3]:Set("Rainbow strands: " .. rb .. " (10x value)") end
     end)
     if not ok1 then S._stateLabels = {} end
 end, 1)
@@ -1094,6 +1163,39 @@ SettingsSub:AddButton({
         pcall(function() Window:Destroy() end)
     end),
 })
+
+-- ==============================================================================
+-- CONFIG RESYNC (re-apply loaded flags to live state)
+-- ==============================================================================
+local function ResyncAll()
+    local ok, err = pcall(function()
+        S.autoDig        = Window:Get("dig_enabled", false)
+        S.rainbowMode    = Window:Get("dig_rainbow", "Off")
+        S.digMode        = Window:Get("dig_mode", "Spiral")
+        S.digRadius      = Window:Get("dig_radius", 8)
+        S.digSpeed       = Window:Get("dig_speed", 1)
+        S.autoSell       = Window:Get("sell_enabled", false)
+        S.sellThreshold  = Window:Get("sell_threshold", 20)
+        S.autoGems       = Window:Get("gems_enabled", false)
+        S.autoNeedle     = Window:Get("needle_enabled", false)
+        S.collectWith    = Window:Get("collect_with", "Hand")
+        S.autoUpgrade    = Window:Get("upg_enabled", false)
+        S.maxUpgradeCost = Window:Get("upg_maxcost", 100)
+        S.espEnabled     = Window:Get("esp_enabled", false)
+        S.espRainbow     = Window:Get("esp_rainbow", true)
+        S.espNeedle      = Window:Get("esp_needle", true)
+        S.espGems        = Window:Get("esp_gems", true)
+        S.walkSpeed      = Window:Get("walkspeed", 16)
+        S.jumpPower      = Window:Get("jumppower", 50)
+        S.infiniteJump   = Window:Get("infjump", false)
+        S.fly            = Window:Get("fly", false)
+        S.noclip         = Window:Get("noclip", false)
+        S.antiAFK        = Window:Get("antiafk", false)
+        S.fullbright     = Window:Get("fullbright", false)
+        if not S.espEnabled then clearEsp() end
+    end)
+    if not ok then warn("[Oxide NeedleHaystack] ResyncAll: " .. tostring(err)) end
+end
 
 -- ==============================================================================
 -- UNLOAD
