@@ -607,7 +607,6 @@ local esp = {
     name = false, distance = false, health = false,
     hpPercent = false, weapon = false,
     skeleton = false, skeletonColor = Color3.fromRGB(120, 255, 120),
-    offscreen = false,
     visibleCheck = false,
     tracer = false, tracerOrigin = "Bottom",
     teamCheck = false, rainbow = false,
@@ -642,7 +641,7 @@ local function GetPlayerBox(plr)
         for i = 1, 8 do o.corners[i] = newDrawing("Line", { Thickness = 1, Visible = false, Color = Color3.new(1, 1, 1) }) end
         o.skel = {}
         for i = 1, 14 do o.skel[i] = newDrawing("Line", { Thickness = 1.2, Visible = false }) end
-        o.offscreen = newDrawing("Line", { Thickness = 1.5, Visible = false })
+
     end
     playerObjects[plr] = o
     return o
@@ -713,9 +712,9 @@ local function GetBox2D(char)
     local anyOn = false
     for x = -1, 1, 2 do for y = -1, 1, 2 do for z = -1, 1, 2 do
         local corner = (cf * CFrame.new(size.X / 2 * x, size.Y / 2 * y, size.Z / 2 * z)).Position
-        local sp, on = Camera:WorldToViewportPoint(corner)
+        local sp = Camera:WorldToViewportPoint(corner)
         if sp.Z > 0 then
-            anyOn = anyOn or on
+            anyOn = true
             minX = math.min(minX, sp.X); minY = math.min(minY, sp.Y)
             maxX = math.max(maxX, sp.X); maxY = math.max(maxY, sp.Y)
         end
@@ -748,11 +747,11 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
     if HUB.dead then return end
     local enabled = esp.enabled and hasDrawing
     for plr, o in pairs(playerObjects) do
-        for _, d in ipairs({ o.frame, o.outline, o.fill, o.name, o.dist, o.tracer, o.hpBack, o.hp, o.hpText, o.weapon, o.offscreen }) do
-            if d then d.Visible = false end
+        for _, d in ipairs({ o.frame, o.outline, o.fill, o.name, o.dist, o.tracer, o.hpBack, o.hp, o.hpText, o.weapon }) do
+            pcall(function() if d then d.Visible = false end end)
         end
-        for _, l in ipairs(o.corners) do if l then l.Visible = false end end
-        for _, l in ipairs(o.skel) do if l then l.Visible = false end end
+        for _, l in ipairs(o.corners) do pcall(function() if l then l.Visible = false end end) end
+        for _, l in ipairs(o.skel) do pcall(function() if l then l.Visible = false end end) end
     end
     if not enabled then return end
     local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
@@ -827,17 +826,19 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
                                 o.dist.Position = Vector2.new((minX + maxX) / 2, maxY + 2)
                             end
                             if esp.tracer and o.tracer then
-                                o.tracer.Visible = true
-                                o.tracer.Color = rainbow or esp.color
-                                local sp, on = Camera:WorldToViewportPoint((hrp or char):GetPivot().Position)
-                                if on and sp.Z > 0 then
-                                    local origin = center
-                                    if esp.tracerOrigin == "Bottom" then origin = Vector2.new(center.X, Camera.ViewportSize.Y)
-                                    elseif esp.tracerOrigin == "Top" then origin = Vector2.new(center.X, 0)
-                                    elseif esp.tracerOrigin == "Mouse" then origin = UserInputService:GetMouseLocation() end
-                                    o.tracer.From = origin
-                                    o.tracer.To = Vector2.new(sp.X, sp.Y)
-                                end
+                                pcall(function()
+                                    o.tracer.Visible = true
+                                    o.tracer.Color = rainbow or esp.color
+                                    local sp = Camera:WorldToViewportPoint((hrp or char):GetPivot().Position)
+                                    if sp.Z > 0 then
+                                        local origin = center
+                                        if esp.tracerOrigin == "Bottom" then origin = Vector2.new(center.X, Camera.ViewportSize.Y)
+                                        elseif esp.tracerOrigin == "Top" then origin = Vector2.new(center.X, 0)
+                                        elseif esp.tracerOrigin == "Mouse" then origin = UserInputService:GetMouseLocation() end
+                                        o.tracer.From = origin
+                                        o.tracer.To = Vector2.new(sp.X, sp.Y)
+                                    end
+                                end)
                             end
                             if esp.skeleton and hrp then
                                 pcall(function()
@@ -854,7 +855,7 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
                                             if l then
                                                 local okA, sa, oa = pcall(function() return Camera:WorldToViewportPoint(pa) end)
                                                 local okB, sb, ob = pcall(function() return Camera:WorldToViewportPoint(pb) end)
-                                                if okA and okB and oa and ob and sa.Z > 0 and sb.Z > 0 then
+                                                if okA and okB and sa.Z > 0 and sb.Z > 0 then
                                                     l.Visible = true
                                                     l.Color = skelColor
                                                     l.From = Vector2.new(sa.X, sa.Y)
@@ -865,26 +866,7 @@ local espRenderConn = RunService.RenderStepped:Connect(function()
                                     end
                                 end)
                             end
-                            if esp.offscreen and o.offscreen and hrp then
-                                pcall(function()
-                                    local sp, on = Camera:WorldToViewportPoint(hrp.Position)
-                                    if sp.Z > 0 and not on then
-                                        local vs = Camera.ViewportSize
-                                        local margin = 30
-                                        local cx = math.clamp(sp.X, margin, vs.X - margin)
-                                        local cy = math.clamp(sp.Y, margin, vs.Y - margin)
-                                        local edge = Vector2.new(cx, cy)
-                                        local dirV = (Vector2.new(sp.X, sp.Y) - edge)
-                                        if dirV.Magnitude > 8 then
-                                            local n = dirV.Unit * 14
-                                            o.offscreen.Visible = true
-                                            o.offscreen.Color = rainbow or esp.color
-                                            o.offscreen.From = edge - n
-                                            o.offscreen.To = edge
-                                        end
-                                    end
-                                end)
-                            end
+
                         end
                     end
                 end
@@ -918,7 +900,6 @@ EspSub:AddToggle({ Name = "Skeleton", Default = false, Flag = "rv_espskel", Call
 EspSub:AddColorPicker({ Name = "Skeleton Color", Default = esp.skeletonColor, Flag = "rv_espskelcolor", Callback = function(c) esp.skeletonColor = c end })
 EspSub:AddSection("Extras")
 EspSub:AddToggle({ Name = "Tracers", Default = false, Flag = "rv_esptracer", Callback = function(v) esp.tracer = v end })
-EspSub:AddToggle({ Name = "Offscreen Indicators", Default = false, Flag = "rv_espoffscreen", Callback = function(v) esp.offscreen = v end })
 EspSub:AddToggle({ Name = "Visibility Check", Default = false, Flag = "rv_espvisible", Callback = function(v) esp.visibleCheck = v end })
 local applyTracerOrigin = function(v) esp.tracerOrigin = v end
 local tracerOriginDropdown = EspSub:AddDropdown({
