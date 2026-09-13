@@ -139,118 +139,146 @@ end
 
 pcall(bypassClientDetections)
 
--- Runtime AC Detection Table Freezer (Neutralizes violation storage)
-pcall(function()
-    local getgc = getgc or (debug and debug.getgc)
-    local setmeta = setrawmetatable or setmetatable
-    local getmeta = getrawmetatable or getmetatable
+-- ══════════════════════════════════════════════════════════════════════════════
+-- CLIENT AC NEUTRALIZER — LAYER 2-5 (GC HEAP SCANS)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- PHONE FIX - why mobile crashed right at "execute": each of these four passes
+-- walks the ENTIRE GC heap, and running all four back-to-back *synchronously at
+-- script load* froze the client for seconds. Desktop executors got through it
+-- before the client noticed, phone executors got killed by the watchdog.
+-- The identical work now runs in a single background task in small slices,
+-- releasing the client between slices. Same neutralization, no startup freeze.
+--
+-- Shared heap scanner: walks the GC heap in small slices, yields to the client
+-- between them, and frees refs as it goes so the whole heap is never pinned.
+-- A step returning `true` stops the scan early.
+local function ScanGCHeap(step, perChunk)
+    local scan = getgc or (debug and debug.getgc)
+    if type(scan) ~= "function" then return end
+    local ok, objects = pcall(scan, true)
+    if not ok or type(objects) ~= "table" then return end
+    perChunk = perChunk or 400
+    for i = 1, #objects do
+        local obj = objects[i]
+        objects[i] = nil
+        local okStep, stop = pcall(step, obj)
+        if okStep and stop == true then return end
+        if i % perChunk == 0 then task.wait() end
+    end
+end
 
-    if getgc and setmeta then
-        for _, obj in ipairs(getgc(true)) do
-            if typeof(obj) == "table" and not (getmeta and getmeta(obj)) then
-                local mainrun = false
-                for _, v in pairs(obj) do
-                    if v == obj then
-                        mainrun = true
-                        break
-                    end
-                end
-                if mainrun then
-                    for _, v in pairs(obj) do
-                        if typeof(v) == "number" and v >= 1 and v <= 3 and obj[v] == nil then
-                            pcall(setmeta, obj, { __newindex = function() end })
-                            break
-                        end
-                    end
+local AcSlices = {}
+do
+
+    -- Layer 2: Runtime AC Detection Table Freezer (neutralizes violation storage)
+    function AcSlices.FreezeTables()
+        local setmeta = setrawmetatable or setmetatable
+        local getmeta = getrawmetatable or getmetatable
+        if not setmeta then return end
+        ScanGCHeap(function(obj)
+            if typeof(obj) ~= "table" or (getmeta and getmeta(obj)) then return end
+            local mainrun = false
+            for _, v in pairs(obj) do
+                if v == obj then
+                    mainrun = true
+                    break
                 end
             end
+            if not mainrun then return end
+            for _, v in pairs(obj) do
+                if typeof(v) == "number" and v >= 1 and v <= 3 and obj[v] == nil then
+                    pcall(setmeta, obj, { __newindex = function() end })
+                    break
+                end
+            end
+        end)
+    end
+
+    -- Layer 2b: UGI Constant Wiper (neutralizes ReplicatedFirst.UGI watchdog)
+    function AcSlices.WipeUGI()
+        local getconstants = getconstants or (debug and debug.getconstants)
+        local setconstant = setconstant or (debug and debug.setconstant)
+        local islclosure = islclosure or function(Function)
+            return not pcall(setfenv, getfenv(Function))
         end
+        if not (getconstants and setconstant and debug and debug.info) then return end
+        ScanGCHeap(function(Function)
+            if typeof(Function) ~= "function" or not islclosure(Function) then return end
+            local ok, Source = pcall(debug.info, Function, "s")
+            if not ok or type(Source) ~= "string" then return end
+            if not Source:find("ReplicatedFirst", 1, true) or not Source:find("UGI", 1, true) then return end
+            local okC, Constants = pcall(getconstants, Function)
+            if not okC or type(Constants) ~= "table" then return end
+            for Index, Constant in next, Constants do
+                if type(Constant) == "string" and Constant == "Humanoid" then
+                    pcall(setconstant, Function, Index, "")
+                end
+            end
+        end)
     end
-end)
 
--- UGI Constant Wiper (neutralizes ReplicatedFirst.UGI watchdog)
-pcall(function()
-    local getconstants = getconstants or (debug and debug.getconstants)
-    local setconstant = setconstant or (debug and debug.setconstant)
-    local islclosure = islclosure or function(Function)
-        return not pcall(setfenv, getfenv(Function))
-    end
-
-    if getgc and getconstants and setconstant then
-        for _, Function in ipairs(getgc(true)) do
-            if typeof(Function) == "function" and islclosure(Function) then
-                local ok, Source = pcall(debug.info, Function, "s")
-                if ok and type(Source) == "string" and Source:find("ReplicatedFirst", 1, true) and Source:find("UGI", 1, true) then
-                    local okC, Constants = pcall(getconstants, Function)
-                    if okC and type(Constants) == "table" then
-                        for Index, Constant in next, Constants do
-                            if type(Constant) == "string" and Constant == "Humanoid" then
-                                pcall(setconstant, Function, Index, "")
+    -- Layer 3: X-14 Stack Scrubber & Token Neutralizer
+    function AcSlices.ScrubX14()
+        local getconstants = getconstants or (debug and debug.getconstants)
+        local islclosure = islclosure or function(fn) return not pcall(setfenv, getfenv(fn)) end
+        local HookFn = hookfunction or replaceclosure or hookfunc
+        if not (getconstants and HookFn and debug and debug.getstack and debug.setstack) then return end
+        ScanGCHeap(function(fn)
+            if typeof(fn) ~= "function" or not islclosure(fn) then return end
+            local ok, consts = pcall(getconstants, fn)
+            if not ok or type(consts) ~= "table" or not table.find(consts, "X-14") then return end
+            local cb = nil
+            pcall(function()
+                cb = HookFn(fn, function(...)
+                    local stack = debug.getstack(1)
+                    if type(stack) == "table" then
+                        for idx, val in pairs(stack) do
+                            if val == "X-14" then
+                                pcall(debug.setstack, 1, idx, nil)
                             end
                         end
                     end
-                end
-            end
-        end
+                    if cb then return cb(...) end
+                end)
+            end)
+        end)
     end
-end)
 
--- Secondary Layer: X-14 Stack Scrubber & Token Neutralizer
-pcall(function()
-    local getconstants = getconstants or (debug and debug.getconstants)
-    local islclosure = islclosure or function(fn) return not pcall(setfenv, getfenv(fn)) end
-    local HookFn = hookfunction or replaceclosure or hookfunc
-    if getgc and getconstants and HookFn and debug and debug.getstack and debug.setstack then
-        for _, fn in ipairs(getgc(true)) do
-            if typeof(fn) == "function" and islclosure(fn) then
-                local ok, consts = pcall(getconstants, fn)
-                if ok and type(consts) == "table" and table.find(consts, "X-14") then
-                    local cb = nil
-                    cb = HookFn(fn, function(...)
-                        local stack = debug.getstack(1)
-                        if type(stack) == "table" then
-                            for idx, val in pairs(stack) do
-                                if val == "X-14" then
-                                    pcall(debug.setstack, 1, idx, nil)
-                                end
-                            end
-                        end
-                        if cb then return cb(...) end
-                    end)
+    -- Layer 4: Anti-Tamper State Table Sanitizer (19-upvalue detection)
+    function AcSlices.SanitizeState()
+        local islclosure = islclosure or function(v) return not pcall(setfenv, getfenv(v)) end
+        local getupvalues = getupvalues or (debug and debug.getupvalues)
+        local getupvalue = getupvalue or (debug and debug.getupvalue)
+        local setupvalue = setupvalue or (debug and debug.setupvalue)
+        local clonefunction = clonefunction or function(f) return function(...) return f(...) end end
+        if not (getupvalues and getupvalue and setupvalue) then return end
+        ScanGCHeap(function(v)
+            if typeof(v) ~= "function" or not islclosure(v) then return end
+            local ok, upvs = pcall(getupvalues, v)
+            if not ok or type(upvs) ~= "table" or #upvs ~= 19 then return end
+            local ok2, u2 = pcall(getupvalue, v, 2)
+            if not ok2 or typeof(u2) ~= "function" then return end
+            local old = clonefunction(u2)
+            pcall(setupvalue, v, 2, function(a, b)
+                if b and typeof(b) == "table" then
+                    pcall(setmetatable, b, {})
                 end
-            end
-        end
+                return old(a, b)
+            end)
+        end)
     end
-end)
+end
 
--- Layer 3: Anti-Tamper State Table Sanitizer (19-upvalue detection neutralization)
-pcall(function()
-    local getgc = getgc or (debug and debug.getgc)
-    local islclosure = islclosure or function(v) return not pcall(setfenv, getfenv(v)) end
-    local getupvalues = getupvalues or (debug and debug.getupvalues)
-    local getupvalue = getupvalue or (debug and debug.getupvalue)
-    local setupvalue = setupvalue or (debug and debug.setupvalue)
-    local clonefunction = clonefunction or function(f) return function(...) return f(...) end end
-
-    if getgc and getupvalues and getupvalue and setupvalue then
-        for _, v in ipairs(getgc(true)) do
-            if typeof(v) == "function" and islclosure(v) then
-                local ok, upvs = pcall(getupvalues, v)
-                if ok and upvs and #upvs == 19 then
-                    local ok2, u2 = pcall(getupvalue, v, 2)
-                    if ok2 and typeof(u2) == "function" then
-                        local old = clonefunction(u2)
-                        pcall(setupvalue, v, 2, function(a, b)
-                            if b and typeof(b) == "table" then
-                                pcall(setmetatable, b, {})
-                            end
-                            return old(a, b)
-                        end)
-                    end
-                end
-            end
-        end
-    end
+-- One background task, one pass at a time, so only a single heap snapshot is
+-- ever alive. The menu now appears instantly instead of after the scans.
+task.spawn(function()
+    pcall(AcSlices.FreezeTables)
+    task.wait()
+    pcall(AcSlices.WipeUGI)
+    task.wait()
+    pcall(AcSlices.ScrubX14)
+    task.wait()
+    pcall(AcSlices.SanitizeState)
 end)
 
 -- ==============================================================================
@@ -461,25 +489,32 @@ task.spawn(function()
 end)
 
 -- Real-time Memory Evidence Scrubber for Character Integrity
+-- PHONE FIX: the "not found yet" path used to re-scan the ENTIRE GC heap every
+-- 0.2 s, forever. On a phone that is a continuous full-heap scan - the client
+-- froze and the watchdog killed it right at "execute". Scans are now sliced, and
+-- the retry backs off from 5 s up to 30 s. Once the table is found, the cheap
+-- per-tick scrub still runs at 0.2 s exactly as before.
 task.spawn(function()
-    if not getgc then return end
+    if not (getgc or (debug and debug.getgc)) then return end
     local st = nil
+    local misses = 0
 
     local function findIntegrityTable()
-        local ok, objs = pcall(getgc, true)
-        if ok and objs then
-            for _, o in pairs(objs) do
-                if type(o) == "table" then
-                    local hit = false
-                    pcall(function()
-                        hit = (rawget(o, "ValidationLocked") ~= nil and rawget(o, "Evidence") ~= nil)
-                            or (rawget(o, "ThreatLevel") ~= nil and rawget(o, "LastObservedSample") ~= nil)
-                    end)
-                    if hit then return o end
-                end
+        local found = nil
+        ScanGCHeap(function(o)
+            if found then return true end
+            if type(o) ~= "table" then return end
+            local hit = false
+            pcall(function()
+                hit = (rawget(o, "ValidationLocked") ~= nil and rawget(o, "Evidence") ~= nil)
+                    or (rawget(o, "ThreatLevel") ~= nil and rawget(o, "LastObservedSample") ~= nil)
+            end)
+            if hit then
+                found = o
+                return true
             end
-        end
-        return nil
+        end, 250)
+        return found
     end
 
     track(LP.CharacterAdded:Connect(function()
@@ -490,6 +525,18 @@ task.spawn(function()
     while not HUB.dead do
         if not st then
             st = findIntegrityTable()
+            if not st then
+                -- Back off between full heap scans: 5 s, 10 s, 20 s, then 30 s.
+                misses = misses + 1
+                local waitFor = math.min(5 * (2 ^ math.min(misses - 1, 3)), 30)
+                local slept = 0
+                while slept < waitFor and not HUB.dead do
+                    task.wait(0.5)
+                    slept = slept + 0.5
+                end
+            elseif misses > 0 then
+                misses = 0
+            end
         end
 
         if st then
@@ -571,24 +618,6 @@ local avoidTrapsEnabled       = true
 -- Boss Arena (Abyss Overlord) state + helpers live in ONE table so the main chunk
 -- stays under Luau's 200-local ceiling.
 local Boss = { autoJoin = false, autoMastery = false, claimed = {}, arenaReady = false }
-
-local function instantTP(cframe)
-    local root = findHRP()
-    if not root then return end
-    root.CFrame = cframe
-    root.AssemblyLinearVelocity = Vector3.zero
-    root.AssemblyAngularVelocity = Vector3.zero
-    task.spawn(function()
-        local char = LP.Character
-        if char then
-            for _, part in ipairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    pcall(function() part.CanCollide = false end)
-                end
-            end
-        end
-    end)
-end
 
 local function SafeTeleport(targetPos)
     local root = findHRP()
@@ -905,7 +934,6 @@ local MUTATION_FILTERS = {
 -- ==============================================================================
 local autoStealEnabled          = false
 local rareEggHunter             = true
-local stealParasiteOnly         = false
 local stealBigEggsOnly          = false
 local selectedStealRarities     = {}
 local selectedStealAreas        = {}
@@ -945,7 +973,6 @@ local function getSellRarityFilter(selected)
     return selected
 end
 
-local instantPickupEnabled      = true
 local noKnockbackEnabled        = true
 local batAuraEnabled            = false
 local batAuraRadius             = 20
@@ -1048,10 +1075,6 @@ local function isMutationAllowed(muts, record, filter)
     local isParasite = (record and record.HasParasite == true)
         or (type(muts) == "table" and (table.find(muts, "Parasite") or table.find(muts, "Monstrous")))
         or (record and (record.BaseMutation == "Parasite" or record.BaseMutation == "Monstrous"))
-
-    if stealParasiteOnly and not isParasite then
-        return false
-    end
 
     if not filter or type(filter) ~= "table" then return true end
     local count = 0
@@ -1746,6 +1769,7 @@ end
 Boss.autoFight        = false
 Boss.hazardImmune     = false
 Boss.arenaApproach    = "Crystals First"
+Boss.glideSpeed       = 140   -- arena approach speed (studs/s) - no teleporting
 Boss._target          = nil
 
 function Boss.IsInArena()
@@ -1824,7 +1848,39 @@ function Boss.FindTarget()
     return best, (best and best:IsDescendantOf(towers or arena) and "Boss" or nil)
 end
 
--- One combat step: close in on the target, bat equipped, swing.
+-- Smooth glide to a stand position. The arena is a floating platform, so this
+-- does NOT use the overworld travel helpers (those clamp the route to ground
+-- level / the road and would drop us through the arena). Returns true on arrival.
+function Boss.GlideTo(destination, speed)
+    local root = findHRP()
+    if not root or not destination then return false end
+
+    speed = math.clamp(tonumber(speed) or tonumber(Boss.glideSpeed) or 140, 40, 400)
+    local t0 = os.clock()
+
+    while not HUB.dead and os.clock() - t0 < 2.5 do
+        local cur = root.Position
+        local toGo = destination - cur
+        local remain = toGo.Magnitude
+        if remain < 0.8 then break end
+
+        local dir = toGo.Unit
+        -- ease out so we settle next to the crystal instead of overshooting
+        local stepSpeed = math.min(speed, math.max(40, remain * 4))
+        local step = math.min(stepSpeed * RunService.Heartbeat:Wait(), remain)
+        local nextPos = cur + dir * step
+
+        root.CFrame = CFrame.lookAt(nextPos, nextPos + dir)
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end
+
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    return (root.Position - destination).Magnitude < 3
+end
+
+-- One combat step: glide in on the target, bat equipped, swing.
 function Boss.Fight()
     if not Boss.IsInArena() then return false end
 
@@ -1837,11 +1893,13 @@ function Boss.Fight()
 
     local dist = (root.Position - target.Position).Magnitude
     if dist > 7 then
+        -- Glide in from our current side; keep the arena's own height so we stay
+        -- on the platform, and stop 5 studs short of the crystal.
         local offset = root.Position - target.Position
-        if offset.Magnitude < 1 then offset = Vector3.new(0, 0, 1) end
-        local stand = target.Position + offset.Unit * 5 + Vector3.new(0, 2.5, 0)
-        instantTP(CFrame.lookAt(stand, target.Position))
-        task.wait(0.06)
+        offset = Vector3.new(offset.X, 0, offset.Z)
+        if offset.Magnitude < 0.5 then offset = Vector3.new(0, 0, 1) end
+        local stand = target.Position + offset.Unit * 5
+        Boss.GlideTo(stand)
     end
 
     -- The bat swing is what the server scores; the tool activation covers gear
@@ -1939,22 +1997,6 @@ local function BuyAffordableTrails()
     end
 end
 
-local instantPickupConn = nil
-local function SetupInstantPickup(enabled)
-    instantPickupEnabled = enabled
-    local ProximityPromptService = game:GetService("ProximityPromptService")
-    if enabled and not instantPickupConn then
-        instantPickupConn = track(ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt, player)
-            if player == LP and prompt.Name == "CarryAreaEgg" then
-                prompt.HoldDuration = 0
-            end
-        end))
-    elseif not enabled and instantPickupConn then
-        pcall(function() instantPickupConn:Disconnect() end)
-        instantPickupConn = nil
-    end
-end
-
 local function SetNoKnockback(enabled)
     noKnockbackEnabled = enabled
     if enabled then
@@ -1971,7 +2013,6 @@ end
 
 -- Auto-enable defensive features by default (user request)
 pcall(function() if avoidTrapsEnabled then NeutralizeTraps() end end)
-pcall(function() if instantPickupEnabled then SetupInstantPickup(true) end end)
 pcall(function() if noKnockbackEnabled then SetNoKnockback(true) end end)
 
 local function SellSelectedPets()
@@ -2586,17 +2627,6 @@ StealSub:AddDropdown({
     Callback = function(v) stealMovementMethod = v end
 })
 StealSub:AddToggle({
-    Name = "Steal Infested / Parasite Eggs Only", Default = false, Flag = "steal_parasite_only",
-    Callback = function(v)
-        stealParasiteOnly = v
-        Notify("Parasite Eggs", v and "Targeting Infested Eggs Only" or "All Filtered Eggs", v and "Success" or "Info")
-    end
-})
-StealSub:AddToggle({
-    Name = "Instant Prompt Pickup", Default = true, Flag = "instant_pickup",
-    Callback = function(v) SetupInstantPickup(v) end
-})
-StealSub:AddToggle({
     Name = "Rare Egg Hunter (Highest Rarity First)", Default = true, Flag = "rare_hunter",
     Callback = function(v) rareEggHunter = v end
 })
@@ -3151,7 +3181,7 @@ ConfigSub:AddButton({
 
     ConfigSub:AddParagraph({
         Title = "Oxide HUB | Ein Ei stehlen",
-        Content = "Version 4.2.0 (Production)\nEquipped with UGI / Client AC Neutralizer, BAC Telemetry Spoofer, Evidence Scrubber, Strict Rarity Filtering, clean open walkway travel without wall clipping, automatic return to trigger position, and auto egg placement in pen.\nAutomated egg stealing, hatching, homestead base upgrades, treadmill speed training, rewards collector, bat aura, ESP tracker."
+        Content = "Version 4.2.1 (Production)\nEquipped with UGI / Client AC Neutralizer, BAC Telemetry Spoofer, Evidence Scrubber, Strict Rarity Filtering, clean open walkway travel without wall clipping, automatic return to trigger position, and auto egg placement in pen.\nAutomated egg stealing, hatching, homestead base upgrades, treadmill speed training, rewards collector, bat aura, ESP tracker."
     })
 end
 
