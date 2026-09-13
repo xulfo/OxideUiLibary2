@@ -1769,8 +1769,15 @@ end
 Boss.autoFight        = false
 Boss.hazardImmune     = false
 Boss.arenaApproach    = "Crystals First"
-Boss.glideSpeed       = 140   -- arena approach speed (studs/s) - no teleporting
+Boss.glideSpeed       = 260          -- arena approach speed (studs/s) - no teleporting
+Boss.engageDistance   = 7            -- swing once this close to the crystal
+Boss.swingInterval    = 0.15         -- seconds between swings
 Boss._target          = nil
+Boss._targetPart      = nil
+Boss._targetAt        = 0
+Boss._stepAt          = 0
+Boss._swingAt         = 0
+Boss._batAt           = 0
 
 function Boss.IsInArena()
     return LP:GetAttribute("InBossArena") == true
@@ -1848,67 +1855,106 @@ function Boss.FindTarget()
     return best, (best and best:IsDescendantOf(towers or arena) and "Boss" or nil)
 end
 
--- Smooth glide to a stand position. The arena is a floating platform, so this
--- does NOT use the overworld travel helpers (those clamp the route to ground
--- level / the road and would drop us through the arena). Returns true on arrival.
-function Boss.GlideTo(destination, speed)
+-- One FRAME of travel toward a stand position 5 studs from the target.
+-- Continuous by design: the worker calls this every frame while we are far away,
+-- so movement never pauses between ticks. The arena is a floating platform, so
+-- this never uses the overworld travel helpers (they clamp the route to ground
+-- level and would drop us off it). Returns true when close enough to swing.
+function Boss.GlideStep(target)
     local root = findHRP()
-    if not root or not destination then return false end
+    if not root or not target then return false end
 
-    speed = math.clamp(tonumber(speed) or tonumber(Boss.glideSpeed) or 140, 40, 400)
-    local t0 = os.clock()
+    local offset = root.Position - target.Position
+    offset = Vector3.new(offset.X, 0, offset.Z)
+    if offset.Magnitude < 0.5 then offset = Vector3.new(0, 0, 1) end
 
-    while not HUB.dead and os.clock() - t0 < 2.5 do
-        local cur = root.Position
-        local toGo = destination - cur
-        local remain = toGo.Magnitude
-        if remain < 0.8 then break end
-
-        local dir = toGo.Unit
-        -- ease out so we settle next to the crystal instead of overshooting
-        local stepSpeed = math.min(speed, math.max(40, remain * 4))
-        local step = math.min(stepSpeed * RunService.Heartbeat:Wait(), remain)
-        local nextPos = cur + dir * step
-
-        root.CFrame = CFrame.lookAt(nextPos, nextPos + dir)
+    local destination = target.Position + offset.Unit * 5
+    local toGo = destination - root.Position
+    local remain = toGo.Magnitude
+    if remain < 1.0 then
         root.AssemblyLinearVelocity = Vector3.zero
         root.AssemblyAngularVelocity = Vector3.zero
+        return true
     end
 
+    -- Advance by the REAL frame delta so the speed stays constant no matter how
+    -- often the worker ticks (a fixed per-tick step made it stutter).
+    local now = os.clock()
+    local dt = math.clamp(now - (Boss._stepAt or now), 0.001, 0.1)
+    Boss._stepAt = now
+
+    local speed = math.clamp(tonumber(Boss.glideSpeed) or 260, 60, 500)
+    local dir = toGo.Unit
+    local step = math.min(speed * dt, remain)
+    local nextPos = root.Position + dir * step
+
+    local face = Vector3.new(dir.X, 0, dir.Z)
+    if face.Magnitude < 0.01 then face = root.CFrame.LookVector end
+
+    root.CFrame = CFrame.lookAt(nextPos, nextPos + face.Unit)
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
-    return (root.Position - destination).Magnitude < 3
+    return false
 end
 
--- One combat step: glide in on the target, bat equipped, swing.
+-- Keeps a bat in hand without hammering the server: the Codex request only goes
+-- out once every 1.5 s until a bat is actually equipped.
+function Boss.EnsureBat()
+    local char = LP.Character
+    if not char then return nil end
+
+    local held = char:FindFirstChildWhichIsA("Tool")
+    if held and held:GetAttribute("IsBat") == true then return held end
+
+    local now = os.clock()
+    if now - (Boss._batAt or 0) < 1.5 then return nil end
+    Boss._batAt = now
+    return Boss.FindBat()
+end
+
+-- Holds the chosen crystal for a moment: re-picking the closest one every single
+-- frame made the character jitter between two crystals instead of gliding.
+function Boss.CurrentTarget()
+    local now = os.clock()
+    local held = Boss._targetPart
+    if held and held.Parent and (now - (Boss._targetAt or 0)) < 0.35 then
+        local hp = tonumber(held:GetAttribute("Health"))
+        if hp == nil or hp > 0 then return held, Boss._target end
+    end
+    local part, kind = Boss.FindTarget()
+    Boss._targetPart, Boss._target, Boss._targetAt = part, kind, now
+    return part, kind
+end
+
+-- One combat FRAME - the worker calls this every Heartbeat:
+--   far away -> a single smooth glide step;   in range -> swing on a fixed timer.
 function Boss.Fight()
     if not Boss.IsInArena() then return false end
-
-    local bat = Boss.FindBat()
-    local target, kind = Boss.FindTarget()
-    if not target then return false end
 
     local root = findHRP()
     if not root then return false end
 
+    local target, kind = Boss.CurrentTarget()
+    if not target then return false end
+
     local dist = (root.Position - target.Position).Magnitude
-    if dist > 7 then
-        -- Glide in from our current side; keep the arena's own height so we stay
-        -- on the platform, and stop 5 studs short of the crystal.
-        local offset = root.Position - target.Position
-        offset = Vector3.new(offset.X, 0, offset.Z)
-        if offset.Magnitude < 0.5 then offset = Vector3.new(0, 0, 1) end
-        local stand = target.Position + offset.Unit * 5
-        Boss.GlideTo(stand)
+    if dist > Boss.engageDistance then
+        Boss.GlideStep(target)
+        Boss._target = kind
+        return true
     end
+
+    local now = os.clock()
+    if now - (Boss._swingAt or 0) < Boss.swingInterval then return true end
+    Boss._swingAt = now
 
     -- The bat swing is what the server scores; the tool activation covers gear
     -- driven hits. Both are cheap and harmless when the server rejects one.
+    local bat = Boss.EnsureBat()
     if bat then pcall(function() bat:Activate() end) end
     local swing = GetNetRemote("RE/BatSwing/Trigger")
     if swing then pcall(function() swing:FireServer() end) end
 
-    Boss._target = kind
     return true
 end
 
@@ -2132,20 +2178,22 @@ task.spawn(function()
     end
 end)
 
--- 3b. Boss Arena worker: joins when the window opens, then fights on a fast
---     tick so the abyss Overlord actually goes down inside the 330s window.
+-- 3b. Boss Arena worker: joins when the window opens, then fights EVERY FRAME
+--     (one glide step per frame while far away, swings on a timer in range) so
+--     the movement is continuous and the Overlord still goes down inside the
+--     330 s window.
 task.spawn(function()
     while not HUB.dead do
         if Boss.autoJoin or Boss.autoFight then
-            local inArena = Boss.IsInArena()
-            if inArena then
+            if Boss.IsInArena() then
                 if Boss.autoFight then pcall(Boss.Fight) end
+                RunService.Heartbeat:Wait()
             else
                 local ok, open = pcall(Boss.IsOpen)
                 Boss.arenaReady = (ok and open == true)
                 if Boss.arenaReady then pcall(Boss.Join) end
+                task.wait(2)
             end
-            task.wait(inArena and 0.2 or 2)
         else
             task.wait(1)
         end
@@ -3181,7 +3229,7 @@ ConfigSub:AddButton({
 
     ConfigSub:AddParagraph({
         Title = "Oxide HUB | Ein Ei stehlen",
-        Content = "Version 4.2.1 (Production)\nEquipped with UGI / Client AC Neutralizer, BAC Telemetry Spoofer, Evidence Scrubber, Strict Rarity Filtering, clean open walkway travel without wall clipping, automatic return to trigger position, and auto egg placement in pen.\nAutomated egg stealing, hatching, homestead base upgrades, treadmill speed training, rewards collector, bat aura, ESP tracker."
+        Content = "Version 4.2.2 (Production)\nEquipped with UGI / Client AC Neutralizer, BAC Telemetry Spoofer, Evidence Scrubber, Strict Rarity Filtering, clean open walkway travel without wall clipping, automatic return to trigger position, and auto egg placement in pen.\nAutomated egg stealing, hatching, homestead base upgrades, treadmill speed training, rewards collector, bat aura, ESP tracker."
     })
 end
 
