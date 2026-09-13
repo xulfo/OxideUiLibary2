@@ -566,7 +566,7 @@ end
 -- ==============================================================================
 local MAIN_ROAD_Z = -364.5
 
-local stealMovementMethod    = "Tween Glide" -- "Tween Glide", "Fly Glide", "Safe Walk", "Anti Guard"
+local stealMovementMethod    = "Tween Glide" -- "Tween Glide", "Fly Glide", "Safe Walk"
 local avoidTrapsEnabled       = true
 -- Boss Arena (Abyss Overlord) state + helpers live in ONE table so the main chunk
 -- stays under Luau's 200-local ceiling.
@@ -588,88 +588,6 @@ local function instantTP(cframe)
             end
         end
     end)
-end
-
-local function heartbeatTP(cframeTarget, holdTime)
-    local root = findHRP()
-    if not root then return end
-    local char = LP.Character
-    if char then
-        for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then
-                pcall(function() part.CanCollide = false end)
-            end
-        end
-    end
-    local conn
-    conn = RunService.Heartbeat:Connect(function()
-        local r = findHRP()
-        if r and r.Parent then
-            r.CFrame = cframeTarget
-            r.AssemblyLinearVelocity = Vector3.zero
-            r.AssemblyAngularVelocity = Vector3.zero
-        end
-    end)
-    task.wait(holdTime or 0.25)
-    if conn then conn:Disconnect() end
-    local r2 = findHRP()
-    if r2 then
-        r2.CFrame = cframeTarget
-        r2.AssemblyLinearVelocity = Vector3.zero
-        r2.AssemblyAngularVelocity = Vector3.zero
-    end
-end
-
-local BYPASS_FLOAT_HEIGHT = 6.7
-local BYPASS_LEG_OFFSET = Vector3.new(0, -6.7, 0)
-local BYPASS_TP_OFFSET = Vector3.new(0, 6.7, 0)
-
-local function bypassReturnTP(safeCFrame, holdTime)
-    local hrp = findHRP()
-    if not hrp then return false end
-    local targetPart = Workspace:FindFirstChild("SpawnLocation", true)
-    if not targetPart or not targetPart:IsA("BasePart") then
-        heartbeatTP(safeCFrame, holdTime or 0.3)
-        return true
-    end
-    pcall(function() targetPart.CanCollide = false end)
-    local char = LP.Character
-    if char then
-        for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then
-                pcall(function() part.CanCollide = false end)
-            end
-        end
-    end
-    local conn
-    conn = RunService.Heartbeat:Connect(function()
-        local r = findHRP()
-        if not r or not r.Parent then return end
-        pcall(function() targetPart.CFrame = r.CFrame * CFrame.new(BYPASS_LEG_OFFSET) end)
-        r.CFrame = safeCFrame + BYPASS_TP_OFFSET
-        r.AssemblyLinearVelocity = Vector3.zero
-        r.AssemblyAngularVelocity = Vector3.zero
-        pcall(function() targetPart.CFrame = safeCFrame end)
-    end)
-    task.wait(holdTime or 0.35)
-    if conn then conn:Disconnect() end
-    local r2 = findHRP()
-    if r2 then
-        r2.CFrame = safeCFrame
-        r2.AssemblyLinearVelocity = Vector3.zero
-        r2.AssemblyAngularVelocity = Vector3.zero
-    end
-    return true
-end
-
-local function restoreCollisions()
-    local char = LP.Character
-    if not char or not char.Parent then return end
-    for _, part in ipairs(char:GetDescendants()) do
-        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-            part.CanCollide = true
-        end
-    end
 end
 
 local function SafeTeleport(targetPos)
@@ -909,7 +827,7 @@ local function TravelToDestination(targetPos, speed, isApproach)
     elseif stealMovementMethod == "Safe Walk" then
         return TravelSafeWalk(targetPos)
     else
-        -- Both "Tween Glide" and "Anti Guard" smoothly glide to the egg via road
+        -- "Tween Glide" smoothly glides to the egg via the road
         return TravelRoadPath(targetPos, speed, isApproach)
     end
 end
@@ -1337,16 +1255,14 @@ local function StealSpecificEggRobust(targetItem)
 
     local targetPos = record.BoundsCFrame.Position
     local speed = math.clamp(tonumber(glideSpeed) or 750, 50, 750)
-    local isInstantTP = (stealMovementMethod == "Anti Guard")
-
-    -- 1. Travel to egg nest: normal glide for all methods (including Anti Guard)
+    -- 1. Travel to egg nest: glide there via the road
     TravelToDestination(targetPos + Vector3.new(0, 1.2, 0), speed, true)
     if hrp then
         hrp.CFrame = CFrame.new(targetPos + Vector3.new(0, 1.2, 0))
         hrp.AssemblyLinearVelocity = Vector3.zero
         hrp.AssemblyAngularVelocity = Vector3.zero
     end
-    task.wait(isInstantTP and 0.25 or 0.5)
+    task.wait(0.5)
 
     -- 2. Claim egg with instant stop & verification handshake
     local slotKey = nil
@@ -1391,50 +1307,9 @@ local function StealSpecificEggRobust(targetItem)
     local safeCFrame = CFrame.new(safePlotCenter + Vector3.new(0, 1.2, 0))
     local tPickup = os.clock()
     local carried = false
-    local instantFired = false
-    local conns = {}
-    local function fireInstantNow()
-        if instantFired then return end
-        instantFired = true
-        carried = true
-        task.spawn(function()
-            bypassReturnTP(safeCFrame, 0.35)
-            pcall(restoreCollisions)
-            pcall(PlantAllCarriedEggsInPen)
-        end)
-    end
-    if isInstantTP then
-        local char = LP.Character
-        local bp = LP:FindFirstChild("Backpack")
-        local pg = LP:FindFirstChildOfClass("PlayerGui")
-        pcall(function()
-            if char then
-                table.insert(conns, char.ChildAdded:Connect(function()
-                    if isPlayerCarryingEgg() then fireInstantNow() end
-                end))
-            end
-            if bp then
-                table.insert(conns, bp.ChildAdded:Connect(function()
-                    if isPlayerCarryingEgg() then fireInstantNow() end
-                end))
-            end
-            if pg then
-                table.insert(conns, pg.ChildAdded:Connect(function(c)
-                    if c.Name == "DropHeldEgg" then fireInstantNow() end
-                end))
-                local dg = pg:FindFirstChild("DropHeldEgg")
-                if dg then
-                    table.insert(conns, dg:GetPropertyChangedSignal("Enabled"):Connect(function()
-                        if dg.Enabled then fireInstantNow() end
-                    end))
-                end
-            end
-        end)
-    end
-    local maxWait = isInstantTP and 1.2 or 1.5
+    local maxWait = 1.5
     while os.clock() - tPickup < maxWait and not HUB.dead do
-        if carried or instantFired then
-            carried = true
+        if carried then
             break
         end
         if isPlayerCarryingEgg() then
@@ -1450,20 +1325,11 @@ local function StealSpecificEggRobust(targetItem)
             prompt.HoldDuration = 0
             pcall(function() fireproximityprompt(prompt) end)
         end
-        if isInstantTP then
-            task.wait()
-        else
-            task.wait(0.08)
-        end
+        task.wait(0.08)
     end
-    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
 
     if not carried then
         ignoredEggs[record.Uid] = os.clock()
-        if isInstantTP then
-            bypassReturnTP(safeCFrame, 0.2)
-            restoreCollisions()
-        end
         return false
     end
 
@@ -1648,7 +1514,6 @@ local function StealSpecificEggRobust(targetItem)
                 -- Fast trigger back to safe area once egg re-attached
                 if isPlayerCarryingEgg() then
                     task.wait(0.12)
-                    isInstantTP = false
                 else
                     -- Extra fallback: one more prompt scan if still not carrying
                     task.wait(0.12)
@@ -1663,42 +1528,32 @@ local function StealSpecificEggRobust(targetItem)
                         end
                     end
                     task.wait(0.12)
-                    if isPlayerCarryingEgg() then carried = true isInstantTP = false end
+                    if isPlayerCarryingEgg() then carried = true end
                 end
             end
         end
     end
 
-    -- 3. Return to base: exact bypass TP back for "Anti Guard", fast-then-slow for others! (after guard-hit we glide)
-    if isInstantTP then
-        if not instantFired then
-            bypassReturnTP(safeCFrame, 0.35)
-            task.spawn(function()
-                pcall(restoreCollisions)
-                pcall(PlantAllCarriedEggsInPen)
-            end)
-        end
-    else
-        if speed > 250 then
-            local hrpNow = findHRP()
-            local curPos = hrpNow and hrpNow.Position or targetPos
-            local toBase = safePlotCenter - curPos
-            local distBase = toBase.Magnitude
-            if distBase > 45 then
-                local stagePos = safePlotCenter - toBase.Unit * 35
-                stagePos = Vector3.new(stagePos.X, math.max(stagePos.Y, 70.4), stagePos.Z)
-                TravelToDestination(stagePos, speed, false)
-                local hrp2 = findHRP()
-                if hrp2 then
-                    hrp2.AssemblyLinearVelocity = Vector3.zero
-                    hrp2.AssemblyAngularVelocity = Vector3.zero
-                end
-                task.wait(0.35)
+    -- 3. Return to base: fast-then-slow glide (we always glide back)
+    if speed > 250 then
+        local hrpNow = findHRP()
+        local curPos = hrpNow and hrpNow.Position or targetPos
+        local toBase = safePlotCenter - curPos
+        local distBase = toBase.Magnitude
+        if distBase > 45 then
+            local stagePos = safePlotCenter - toBase.Unit * 35
+            stagePos = Vector3.new(stagePos.X, math.max(stagePos.Y, 70.4), stagePos.Z)
+            TravelToDestination(stagePos, speed, false)
+            local hrp2 = findHRP()
+            if hrp2 then
+                hrp2.AssemblyLinearVelocity = Vector3.zero
+                hrp2.AssemblyAngularVelocity = Vector3.zero
             end
-            TravelToDestination(safePlotCenter, 240, true)
-        else
-            TravelToDestination(safePlotCenter, speed, true)
+            task.wait(0.35)
         end
+        TravelToDestination(safePlotCenter, 240, true)
+    else
+        TravelToDestination(safePlotCenter, speed, true)
     end
 
     -- Settle in the base pen and wait for delivery to confirm
@@ -1797,8 +1652,15 @@ end
 -- ==============================================================================
 Boss.Data = nil
 Boss.MasteryData = nil
-pcall(function() Boss.Data = require(RS.Data.BossEvent) end)
-pcall(function() Boss.MasteryData = require(RS.Data.BossMastery) end)
+
+-- Loaded on first use instead of at script load: keeps the startup path of this
+-- HUB free of anything device specific (phones were crashing at execute time).
+function Boss.EnsureData()
+    if Boss._dataTried then return end
+    Boss._dataTried = true
+    pcall(function() Boss.Data = require(RS.Data.BossEvent) end)
+    pcall(function() Boss.MasteryData = require(RS.Data.BossMastery) end)
+end
 
 Boss.MilestoneFallback = { "Mastery3", "Mastery5", "Mastery10", "Mastery15", "Mastery20", "Mastery30" }
 
@@ -1811,6 +1673,7 @@ function Boss.Snapshot()
 end
 
 function Boss.IsOpen()
+    Boss.EnsureData()
     local snap = Boss.Snapshot()
     if snap then
         if snap.Open ~= nil then return snap.Open == true end
@@ -1826,6 +1689,7 @@ function Boss.IsOpen()
 end
 
 function Boss.SecondsUntilOpen()
+    Boss.EnsureData()
     if Boss.Data and type(Boss.Data.SecondsUntilNextOpen) == "function" then
         local ok, secs = pcall(function() return Boss.Data.SecondsUntilNextOpen() end)
         if ok and tonumber(secs) then return tonumber(secs) end
@@ -1841,6 +1705,7 @@ function Boss.Join()
 end
 
 function Boss.ClaimMastery()
+    Boss.EnsureData()
     local rf = GetNetRemote("RF/BossMastery/AskClaimMilestone")
     if not rf then return 0 end
 
@@ -1879,7 +1744,7 @@ end
 -- is what makes hazard immunity real.
 -- ------------------------------------------------------------------------------
 Boss.autoFight        = false
-Boss.hazardImmune     = true
+Boss.hazardImmune     = false
 Boss.arenaApproach    = "Crystals First"
 Boss._target          = nil
 
@@ -1994,8 +1859,15 @@ end
 -- NOTE: FireServer is one shared C closure, so the hook must match on `self`
 -- and pass everything else straight through - otherwise it would mute every
 -- remote in the game. One hook covers both reports.
+--
+-- IMPORTANT: this hook is installed LAZILY (only when the user opts in below).
+-- Installing it at script load hard-crashed several phone executors, because
+-- hooking a C closure on those runtimes is not supported. Touch-only devices
+-- skip it entirely so the menu still loads on mobile.
 Boss._hazardRemotes = {}
 Boss.hazardHook = false
+Boss.hazardHookTried = false
+
 do
     local hazard = GetNetRemote("RE/BossEvent/HazardHit")
     local blackHole = GetNetRemote("RE/BossEvent/BlackHoleHit")
@@ -2004,21 +1876,40 @@ do
             Boss._hazardRemotes[remote] = true
         end
     end
+end
 
-    if HookFn and next(Boss._hazardRemotes) ~= nil then
-        local oldFire = hazard and hazard.FireServer
-        if type(oldFire) == "function" then
-            local ok = pcall(function()
-                HookFn(oldFire, function(self, ...)
-                    if Boss.hazardImmune and Boss._hazardRemotes[self] then
-                        return -- swallow the hazard damage report
-                    end
-                    return oldFire(self, ...)
-                end)
-            end)
-            Boss.hazardHook = ok
-        end
+function Boss.InstallHazardHook()
+    if Boss.hazardHook then return true end
+    if Boss.hazardHookTried then return false end
+    Boss.hazardHookTried = true
+
+    -- Phone executors crash when a C closure gets hooked, so never do it there.
+    local touchOnly = false
+    pcall(function()
+        touchOnly = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+    end)
+    if touchOnly then
+        Notify("Boss Hazards", "Hazard immunity is not supported on mobile - the boss can still hit you", "Error")
+        return false
     end
+
+    if not HookFn then return false end
+    local hazard = GetNetRemote("RE/BossEvent/HazardHit")
+    if type(hazard) ~= "userdata" or not hazard:IsA("RemoteEvent") then return false end
+
+    local oldFire = hazard.FireServer
+    if type(oldFire) ~= "function" then return false end
+
+    local ok = pcall(function()
+        HookFn(oldFire, function(self, ...)
+            if Boss.hazardImmune and Boss._hazardRemotes[self] then
+                return -- swallow the hazard damage report
+            end
+            return oldFire(self, ...)
+        end)
+    end)
+    Boss.hazardHook = ok
+    return ok
 end
 
 local function DropHeldEgg()
@@ -2691,7 +2582,7 @@ StealSub:AddToggle({
     end)
 })
 StealSub:AddDropdown({
-    Name = "Steal Movement Method", Options = { "Tween Glide", "Fly Glide", "Safe Walk", "Anti Guard" }, Default = "Tween Glide", Flag = "steal_method",
+    Name = "Steal Movement Method", Options = { "Tween Glide", "Fly Glide", "Safe Walk" }, Default = "Tween Glide", Flag = "steal_method",
     Callback = function(v) stealMovementMethod = v end
 })
 StealSub:AddToggle({
@@ -2889,6 +2780,7 @@ EventsSub:AddToggle({
         if v then
             Boss.autoJoin = true
             Boss.autoMastery = true
+            if Boss.hazardImmune then pcall(Boss.InstallHazardHook) end
             Notify("Boss Auto", "Fully automatic: joins, fights the Overlord and claims rewards", "Success")
         else
             Notify("Boss Auto", "Disabled", "Error")
@@ -2900,10 +2792,19 @@ EventsSub:AddDropdown({
     Callback = function(v) Boss.arenaApproach = v end
 })
 EventsSub:AddToggle({
-    Name = "Hazard Immunity (No Black Hole / Trap Damage)", Default = true, Flag = "boss_hazard_immunity",
+    -- Flag deliberately renamed: the first release of this toggle could autosave a
+    -- `true` that re-installed the load-time hook and crashed phones on next run.
+    Name = "Hazard Immunity (No Black Hole / Trap Damage)", Default = false, Flag = "boss_hazard_imm2",
     Callback = safeCallback(function(v)
         Boss.hazardImmune = v
-        Notify("Boss Hazards", v and "Immune - hazard damage reports blocked" or "Normal hazard damage", v and "Success" or "Info")
+        if v then
+            -- Installed only on request: hooking a C closure at load crashed phones.
+            if Boss.InstallHazardHook() then
+                Notify("Boss Hazards", "Immune - hazard damage reports blocked", "Success")
+            end
+        else
+            Notify("Boss Hazards", "Normal hazard damage", "Info")
+        end
     end)
 })
 EventsSub:AddToggle({
