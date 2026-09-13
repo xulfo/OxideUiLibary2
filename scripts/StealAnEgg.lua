@@ -568,8 +568,9 @@ local MAIN_ROAD_Z = -364.5
 
 local stealMovementMethod    = "Tween Glide" -- "Tween Glide", "Fly Glide", "Safe Walk", "Anti Guard"
 local avoidTrapsEnabled       = true
-local autoClaimMonsterChests  = false
-local autoFeedMonster         = false
+-- Boss Arena (Abyss Overlord) state + helpers live in ONE table so the main chunk
+-- stays under Luau's 200-local ceiling.
+local Boss = { autoJoin = false, autoMastery = false, claimed = {}, arenaReady = false }
 
 local function instantTP(cframe)
     local root = findHRP()
@@ -917,6 +918,8 @@ end
 -- RARITY & AREA DICTIONARIES (Dynamic scoring for Rare Egg Hunter)
 -- ==============================================================================
 local RARITY_SCORE_MAP = {
+    ["LightDark"]       = 1300, -- "Angels & Demons" biome rarity (new)
+    ["Light & Dark"]    = 1300,
     ["Titan"]           = 1100,
     ["Divine"]          = 1000,
     ["Transcendent"]    = 1000,
@@ -958,20 +961,21 @@ local AREA_COORDINATES = {
     ["Cosmic"]           = Vector3.new(3390.0, 68.0, -324.0),
     ["Cherry Blossom"]   = Vector3.new(4028.0, 68.5, -396.0),
     ["Titan Temple"]     = Vector3.new(4796.0, 69.5, -328.0),
-    ["Monster Event"]    = Vector3.new(539.5, 68.0, -411.3),
+    ["Light Dark"]       = Vector3.new(5660.0, 70.0, -331.0), -- "Angels & Demons" biome
     ["Dragon Event"]     = Vector3.new(539.5, 68.0, -318.0),
 }
 
 local AREA_NAMES = {
     "Forest", "Lake", "Desert", "Jungle", "Snow", "Volcano",
     "Abyss Ocean", "Prehistoric", "Cosmic", "Cherry Blossom", "Titan Temple",
-    "Monster Event", "Dragon Event"
+    "Light Dark", "Angels & Demons",
 }
 
 local RARITY_NAMES = {
-    "Titan", "Divine", "Superior", "Eternal", "Limited",
+    "Light & Dark", "Titan", "Divine", "Superior", "Eternal", "Limited",
     "Secret", "Exotic", "Cosmic", "Exclusive", "Mythic", "Rainbow",
-    "Squishy God", "Legendary", "Epic", "Rare", "Uncommon", "Common"
+    "Squishy God", "Celestial", "Legendary", "Epic", "Rare", "SuperRare",
+    "Uncommon", "Common"
 }
 
 local MUTATION_FILTERS = {
@@ -1086,6 +1090,23 @@ local function isRarityAllowed(rarityName, filter)
     return false
 end
 
+-- Resolve a user-facing area name to the real AreaId. Newer biomes are listed by
+-- their DisplayName in the game (e.g. "Angels & Demons" -> "Light Dark"), so both
+-- spellings select the same area in the steal filter.
+local function ResolveAreaId(name)
+    local dir = AreasData and AreasData.Directory
+    if type(dir) ~= "table" then return tostring(name) end
+    local lower = string.lower(tostring(name))
+    for id, info in pairs(dir) do
+        if string.lower(tostring(id)) == lower then return id end
+        if type(info) == "table" and info.DisplayName
+            and string.lower(tostring(info.DisplayName)) == lower then
+            return id
+        end
+    end
+    return tostring(name)
+end
+
 local function isAreaAllowed(areaId, filter)
     if not filter or type(filter) ~= "table" then return true end
     local count = 0
@@ -1095,7 +1116,8 @@ local function isAreaAllowed(areaId, filter)
     if filter[areaId] == true then return true end
     local aLower = string.lower(tostring(areaId))
     for k, v in pairs(filter) do
-        if type(v) == "string" and string.lower(v) == aLower then
+        if type(v) == "string" and (string.lower(v) == aLower
+            or string.lower(tostring(ResolveAreaId(v))) == aLower) then
             return true
         elseif type(k) == "string" and string.lower(k) == aLower and v == true then
             return true
@@ -1768,53 +1790,235 @@ local function EquipBestPets()
     if rf then pcall(function() rf:InvokeServer() end) end
 end
 
-local function GetMyMonsterPosition()
-    local myMonster = Workspace:FindFirstChild("MonsterParasiteMonsters") and Workspace.MonsterParasiteMonsters:FindFirstChild("Monster_" .. LP.UserId)
-    if myMonster then
-        local pos = (myMonster.PrimaryPart and myMonster.PrimaryPart.Position) or myMonster:GetPivot().Position
-        return pos
-    end
-    local standPad = Workspace:FindFirstChild("Stands") and Workspace.Stands:FindFirstChild("Pads") and Workspace.Stands.Pads:FindFirstChild("Monster")
-    if standPad then return standPad.Position end
-    return Vector3.new(545.1, 68.0, -413.4)
-end
+-- ==============================================================================
+-- BOSS ARENA (Abyss Overlord) - rotating live event, opens every 30 minutes.
+-- The old feedable monster (MonsterParasite) event is retired in-game and has
+-- been removed from this HUB.
+-- ==============================================================================
+Boss.Data = nil
+Boss.MasteryData = nil
+pcall(function() Boss.Data = require(RS.Data.BossEvent) end)
+pcall(function() Boss.MasteryData = require(RS.Data.BossMastery) end)
 
-local function ClaimMonsterChests()
-    pcall(function()
-        local rf1 = GetNetRemote("RF/MonsterParasite/AskChestClaim")
-        if rf1 then rf1:InvokeServer() end
-        local rf2 = GetNetRemote("RF/MonsterParasite/AskChestTake")
-        if rf2 then rf2:InvokeServer() end
-    end)
-end
+Boss.MilestoneFallback = { "Mastery3", "Mastery5", "Mastery10", "Mastery15", "Mastery20", "Mastery30" }
 
-local function FeedMonsterParasite()
-    local rf = GetNetRemote("RF/MonsterParasite/AskFeed")
-    if not rf then return false end
-
-    local hrp = findHRP()
-    if not hrp then return false end
-
-    local mPos = GetMyMonsterPosition()
-    local dist = (hrp.Position - mPos).Magnitude
-    local savedSpot = nil
-
-    if dist > 12 then
-        savedSpot = hrp.CFrame
-        TravelToDestination(mPos + Vector3.new(0, 1.2, 0), glideSpeed or 200, true)
-        task.wait(0.08)
-    end
-
+function Boss.Snapshot()
+    local rf = GetNetRemote("RF/BossEvent/AskSnapshot")
+    if not rf then return nil end
     local ok, res = pcall(function() return rf:InvokeServer() end)
+    if ok and type(res) == "table" then return res end
+    return nil
+end
 
-    if savedSpot then
-        task.wait(0.1)
-        TravelToDestination(savedSpot.Position, glideSpeed or 200, true)
-        local h = findHRP()
-        if h then h.CFrame = savedSpot end
+function Boss.IsOpen()
+    local snap = Boss.Snapshot()
+    if snap then
+        if snap.Open ~= nil then return snap.Open == true end
+        if snap.BossHealth and snap.BossMaxHealth then
+            return (tonumber(snap.BossHealth) or 0) > 0
+        end
+    end
+    if Boss.Data and type(Boss.Data.SecondsUntilNextOpen) == "function" then
+        local ok, secs = pcall(function() return Boss.Data.SecondsUntilNextOpen() end)
+        if ok and tonumber(secs) then return tonumber(secs) <= 0 end
+    end
+    return false
+end
+
+function Boss.SecondsUntilOpen()
+    if Boss.Data and type(Boss.Data.SecondsUntilNextOpen) == "function" then
+        local ok, secs = pcall(function() return Boss.Data.SecondsUntilNextOpen() end)
+        if ok and tonumber(secs) then return tonumber(secs) end
+    end
+    return nil
+end
+
+function Boss.Join()
+    local rf = GetNetRemote("RF/BossEvent/AskEnter")
+    if not rf then return false end
+    local ok, res = pcall(function() return rf:InvokeServer() end)
+    return ok and res ~= false and res ~= nil
+end
+
+function Boss.ClaimMastery()
+    local rf = GetNetRemote("RF/BossMastery/AskClaimMilestone")
+    if not rf then return 0 end
+
+    local ids = {}
+    if Boss.MasteryData and type(Boss.MasteryData.Milestones) == "table" then
+        for _, m in pairs(Boss.MasteryData.Milestones) do
+            if type(m) == "table" and type(m.Id) == "string" and not Boss.claimed[m.Id] then
+                table.insert(ids, m.Id)
+            end
+        end
+    end
+    if #ids == 0 then
+        for _, id in ipairs(Boss.MilestoneFallback) do
+            if not Boss.claimed[id] then table.insert(ids, id) end
+        end
     end
 
-    return ok and res
+    local claimed = 0
+    for _, id in ipairs(ids) do
+        local ok, res = pcall(function() return rf:InvokeServer(id) end)
+        if ok and res ~= false and res ~= nil then
+            Boss.claimed[id] = true
+            claimed = claimed + 1
+        end
+    end
+    return claimed
+end
+
+-- ------------------------------------------------------------------------------
+-- FULLY AUTOMATIC BOSS FIGHT
+-- Flow inside the arena (verified against the live client): the boss is an
+-- "Abyss Overlord" with 7000 HP and takes 100 damage per player hit; CrystalTowers
+-- shield it and are destroyed with the bat gear (IsBat = true). Hazards (black
+-- hole / rotating X / expanding rings) are damage-reported BY THE CLIENT through
+-- BossEvent.HazardHit / BossEvent.BlackHoleHit, so refusing to send those reports
+-- is what makes hazard immunity real.
+-- ------------------------------------------------------------------------------
+Boss.autoFight        = false
+Boss.hazardImmune     = true
+Boss.arenaApproach    = "Crystals First"
+Boss._target          = nil
+
+function Boss.IsInArena()
+    return LP:GetAttribute("InBossArena") == true
+end
+
+-- Equips a bat gear (the only thing that breaks the crystals).
+function Boss.FindBat()
+    local char = LP.Character
+    if not char then return nil end
+
+    local held = char:FindFirstChildWhichIsA("Tool")
+    if held and held:GetAttribute("IsBat") == true then return held end
+
+    local bag = LP:FindFirstChild("Backpack")
+    if bag then
+        for _, c in ipairs(bag:GetChildren()) do
+            if c:IsA("Tool") and c:GetAttribute("IsBat") == true then
+                c.Parent = char
+                return c
+            end
+        end
+    end
+
+    -- Nothing bat-like carried: ask the Codex for the field bat, then re-scan.
+    local wear = GetNetRemote("RF/Codex/AskWearFieldBat")
+    if wear then pcall(function() wear:InvokeServer() end) end
+    task.wait(0.25)
+
+    if bag then
+        for _, c in ipairs(bag:GetChildren()) do
+            if c:IsA("Tool") and c:GetAttribute("IsBat") == true then
+                c.Parent = char
+                return c
+            end
+        end
+    end
+    return nil
+end
+
+-- Closest live crystal hitbox, else the boss itself / its bat bone.
+function Boss.FindTarget()
+    local arena = Workspace:FindFirstChild("BossArena")
+    if not arena then return nil end
+    local root = findHRP()
+    if not root then return nil end
+
+    local best, bestDist = nil, math.huge
+    local towers = arena:FindFirstChild("CrystalTowers")
+    if towers then
+        for _, tower in ipairs(towers:GetChildren()) do
+            local hb = tower:FindFirstChild("Hitbox", true)
+            if hb and hb:IsA("BasePart") then
+                local hp = tonumber(hb:GetAttribute("Health"))
+                if hp == nil or hp > 0 then
+                    local d = (root.Position - hb.Position).Magnitude
+                    if d < bestDist then best, bestDist = hb, d end
+                end
+            end
+        end
+    end
+
+    if best and Boss.arenaApproach == "Crystals First" then
+        return best, "Crystal"
+    end
+
+    local boss = arena:FindFirstChild("Boss")
+    if boss then
+        local aim = boss:FindFirstChild("UpperHand1.R", true) or boss.PrimaryPart
+        if aim and aim:IsA("BasePart") then
+            local d = (root.Position - aim.Position).Magnitude
+            if d < bestDist then best, bestDist = aim, d end
+        end
+    end
+
+    return best, (best and best:IsDescendantOf(towers or arena) and "Boss" or nil)
+end
+
+-- One combat step: close in on the target, bat equipped, swing.
+function Boss.Fight()
+    if not Boss.IsInArena() then return false end
+
+    local bat = Boss.FindBat()
+    local target, kind = Boss.FindTarget()
+    if not target then return false end
+
+    local root = findHRP()
+    if not root then return false end
+
+    local dist = (root.Position - target.Position).Magnitude
+    if dist > 7 then
+        local offset = root.Position - target.Position
+        if offset.Magnitude < 1 then offset = Vector3.new(0, 0, 1) end
+        local stand = target.Position + offset.Unit * 5 + Vector3.new(0, 2.5, 0)
+        instantTP(CFrame.lookAt(stand, target.Position))
+        task.wait(0.06)
+    end
+
+    -- The bat swing is what the server scores; the tool activation covers gear
+    -- driven hits. Both are cheap and harmless when the server rejects one.
+    if bat then pcall(function() bat:Activate() end) end
+    local swing = GetNetRemote("RE/BatSwing/Trigger")
+    if swing then pcall(function() swing:FireServer() end) end
+
+    Boss._target = kind
+    return true
+end
+
+-- Hazard immunity: the arena's hazard damage is reported by the client, so
+-- blocking those two reports means the boss can never damage us.
+-- NOTE: FireServer is one shared C closure, so the hook must match on `self`
+-- and pass everything else straight through - otherwise it would mute every
+-- remote in the game. One hook covers both reports.
+Boss._hazardRemotes = {}
+Boss.hazardHook = false
+do
+    local hazard = GetNetRemote("RE/BossEvent/HazardHit")
+    local blackHole = GetNetRemote("RE/BossEvent/BlackHoleHit")
+    for _, remote in ipairs({ hazard, blackHole }) do
+        if type(remote) == "userdata" and remote:IsA("RemoteEvent") then
+            Boss._hazardRemotes[remote] = true
+        end
+    end
+
+    if HookFn and next(Boss._hazardRemotes) ~= nil then
+        local oldFire = hazard and hazard.FireServer
+        if type(oldFire) == "function" then
+            local ok = pcall(function()
+                HookFn(oldFire, function(self, ...)
+                    if Boss.hazardImmune and Boss._hazardRemotes[self] then
+                        return -- swallow the hazard damage report
+                    end
+                    return oldFire(self, ...)
+                end)
+            end)
+            Boss.hazardHook = ok
+        end
+    end
 end
 
 local function DropHeldEgg()
@@ -1953,7 +2157,7 @@ local function ClaimAllAvailableRewards()
         local rf3 = GetNetRemote("RF/GroupPerk/RedeemPerk")
         if rf3 then rf3:InvokeServer() end
     end)
-    pcall(ClaimMonsterChests)
+    pcall(Boss.ClaimMastery)
 end
 
 -- ==============================================================================
@@ -1989,11 +2193,30 @@ task.spawn(function()
         if autoUpgradeTreadmill then pcall(UpgradeTreadmillTier) end
         if autoEquipBestPets then pcall(EquipBestPets) end
         if autoClaimRewards then pcall(ClaimAllAvailableRewards) end
-        if autoClaimMonsterChests then pcall(ClaimMonsterChests) end
-        if autoFeedMonster then pcall(FeedMonsterParasite) end
+        if Boss.autoMastery then pcall(Boss.ClaimMastery) end
         if autoSellPets then pcall(SellSelectedPets) end
         if autoSellEggs then pcall(SellSelectedEggs) end
         task.wait(2.5)
+    end
+end)
+
+-- 3b. Boss Arena worker: joins when the window opens, then fights on a fast
+--     tick so the abyss Overlord actually goes down inside the 330s window.
+task.spawn(function()
+    while not HUB.dead do
+        if Boss.autoJoin or Boss.autoFight then
+            local inArena = Boss.IsInArena()
+            if inArena then
+                if Boss.autoFight then pcall(Boss.Fight) end
+            else
+                local ok, open = pcall(Boss.IsOpen)
+                Boss.arenaReady = (ok and open == true)
+                if Boss.arenaReady then pcall(Boss.Join) end
+            end
+            task.wait(inArena and 0.2 or 2)
+        else
+            task.wait(1)
+        end
     end
 end)
 
@@ -2656,27 +2879,82 @@ SalesSub:AddButton({
     end)
 })
 
--- SubTab: Events & Bosses
+-- SubTab: Events & Bosses (Abyss Overlord Boss Arena)
 EventsSub:AddToggle({
-    Name = "Auto Claim Monster Chests", Default = false, Flag = "auto_monster_chests",
-    Callback = function(v) autoClaimMonsterChests = v end
+    Name = "FULL AUTO Boss Fight (Join + Fight + Dodge + Claim)", Default = false, Flag = "auto_fight_boss",
+    Callback = safeCallback(function(v)
+        Boss.autoFight = v
+        -- Full auto also drives the join/claim toggles, but never turns them off,
+        -- so the granular controls below stay independent.
+        if v then
+            Boss.autoJoin = true
+            Boss.autoMastery = true
+            Notify("Boss Auto", "Fully automatic: joins, fights the Overlord and claims rewards", "Success")
+        else
+            Notify("Boss Auto", "Disabled", "Error")
+        end
+    end)
+})
+EventsSub:AddDropdown({
+    Name = "Boss Targeting", Options = { "Crystals First", "Boss First" }, Default = "Crystals First", Flag = "boss_targeting",
+    Callback = function(v) Boss.arenaApproach = v end
 })
 EventsSub:AddToggle({
-    Name = "Auto Feed Monster Parasite", Default = false, Flag = "auto_feed_monster",
-    Callback = function(v) autoFeedMonster = v end
+    Name = "Hazard Immunity (No Black Hole / Trap Damage)", Default = true, Flag = "boss_hazard_immunity",
+    Callback = safeCallback(function(v)
+        Boss.hazardImmune = v
+        Notify("Boss Hazards", v and "Immune - hazard damage reports blocked" or "Normal hazard damage", v and "Success" or "Info")
+    end)
 })
-EventsSub:AddButton({
-    Name = "Claim Monster Chest Now", Primary = true,
-    Callback = safeCallback(function()
-        ClaimMonsterChests()
-        Notify("Monster Event", "Claimed monster chest", "Success")
+EventsSub:AddToggle({
+    Name = "Auto Join Boss Arena (Every 30 min)", Default = false, Flag = "auto_join_boss",
+    Callback = safeCallback(function(v)
+        Boss.autoJoin = v
+        Notify("Boss Arena", v and "Will join whenever the arena opens" or "Disabled", v and "Success" or "Error")
+    end)
+})
+EventsSub:AddToggle({
+    Name = "Auto Claim Boss Mastery Rewards", Default = false, Flag = "auto_boss_mastery",
+    Callback = safeCallback(function(v)
+        Boss.autoMastery = v
+        Notify("Boss Mastery", v and "Enabled" or "Disabled", v and "Success" or "Error")
     end)
 })
 EventsSub:AddButton({
-    Name = "Feed Monster Parasite Now",
+    Name = "Join Boss Arena Now", Primary = true,
     Callback = safeCallback(function()
-        FeedMonsterParasite()
-        Notify("Monster Event", "Fed monster parasite", "Success")
+        if Boss.Join() then
+            Notify("Boss Arena", "Sent to Abyss Overlord", "Success")
+        else
+            Notify("Boss Arena", "Arena is closed - opens every 30 minutes", "Error")
+        end
+    end)
+})
+EventsSub:AddButton({
+    Name = "Claim Boss Mastery Now",
+    Callback = safeCallback(function()
+        local n = Boss.ClaimMastery()
+        if n and n > 0 then
+            Notify("Boss Mastery", "Claimed " .. tostring(n) .. " milestone reward(s)", "Success")
+        else
+            Notify("Boss Mastery", "Nothing claimable yet", "Info")
+        end
+    end)
+})
+EventsSub:AddButton({
+    Name = "Boss Arena Status",
+    Callback = safeCallback(function()
+        local snap = Boss.Snapshot()
+        if snap and snap.Open then
+            local hp = tonumber(snap.BossHealth) or 0
+            local maxHp = tonumber(snap.BossMaxHealth) or 0
+            Notify("Boss Arena", "OPEN - " .. tostring(math.floor(hp)) .. "/" .. tostring(math.floor(maxHp)) .. " HP", "Success")
+        else
+            local secs = Boss.SecondsUntilOpen()
+            local eta = "unknown"
+            if secs then eta = string.format("%d min %d s", math.floor(secs / 60), math.floor(secs % 60)) end
+            Notify("Boss Arena", "Closed - next in " .. eta, "Info")
+        end
     end)
 })
 
