@@ -1,23 +1,23 @@
 -- === HUB STRIP POINT - when executed through the hub ScriptLoader, which injects
---     "local Library = _G.OxideLib" above this line instead. ===
+--     "local Library = _G.ArcLib" above this line instead. ===
 -- ==============================================================================
 
 -- ==============================================================================
 -- RE-EXECUTION GUARD + RESOURCE TRACKING
 -- ==============================================================================
 do
-    local prev = _G.OxideJumpForPets
+    local prev = _G.ArcJumpForPets
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false }
-_G.OxideJumpForPets = HUB
+_G.ArcJumpForPets = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | Jump for Pets",
+    Name = "Arc HUB | Jump for Pets",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.0,
 })
 
@@ -662,7 +662,7 @@ local function SendDiscordWebhook(url, eggData)
                 description = string.format("Successfully banked **%s** (%s) into your pen.", tostring(eggData.name), tostring(eggData.rarity)),
                 color = color,
                 fields = fields,
-                footer = { text = "Oxide HUB • Springen für Tiere!" },
+                footer = { text = "Arc HUB • Springen für Tiere!" },
                 timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
             }
         }
@@ -1788,7 +1788,7 @@ MiscGeneralSub:AddKeybind({
 })
 
 MiscGeneralSub:AddButton({
-    Name = "Unload Oxide HUB",
+    Name = "Unload Arc HUB",
     Callback = safeCallback(function()
         pcall(function() HUB.Unload() end)
     end)
@@ -1884,7 +1884,7 @@ HUB.Unload = function()
     end
 
     pcall(function() Window:Destroy() end)
-    _G.OxideJumpForPets = nil
+    _G.ArcJumpForPets = nil
 end
 
-Notify("Oxide HUB", "Jump for Pets script loaded successfully!", "Success", 3.5)
+Notify("Arc HUB", "Jump for Pets script loaded successfully!", "Success", 3.5)
