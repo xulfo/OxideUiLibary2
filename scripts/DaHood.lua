@@ -1,23 +1,23 @@
 -- ═══ HUB STRIP POINT — when executed through the hub ScriptLoader, which injects
---     "local Library = _G.OxideLib" above this line instead. ═══
+--     "local Library = _G.ArcLib" above this line instead. ═══
 -- ══════════════════════════════════════════════════════════════════════════════
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- RE-EXECUTION GUARD + RESOURCE TRACKING
 -- ══════════════════════════════════════════════════════════════════════════════
 do
-    local prev = _G.OxideDaHood
+    local prev = _G.ArcDaHood
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false }
-_G.OxideDaHood = HUB
+_G.ArcDaHood = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | Da Hood",
+    Name = "Arc HUB | Da Hood",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.2,
 })
 
@@ -364,8 +364,8 @@ CharSub:AddToggle({
     Callback = function(v) antiAFK = v end,
 })
 
-if not _G.OxideDaHoodAntiAFK then
-    _G.OxideDaHoodAntiAFK = true
+if not _G.ArcDaHoodAntiAFK then
+    _G.ArcDaHoodAntiAFK = true
     LocalPlayer.Idled:Connect(function()
         if not antiAFK then return end
         pcall(function()
@@ -582,13 +582,13 @@ TpMiscSub:AddButton({
 TpMiscSub:AddToggle({
     Name = "Tween Teleport", Default = false, Flag = "tp_tween",
     Description = "Smooth tween instead of instant CFrame",
-    Callback = function(v) _G.OxideTweenTP = v end,
+    Callback = function(v) _G.ArcTweenTP = v end,
 })
 -- patch existing city/bank buttons to respect tween flag
 local function tweenTP(cf)
     local hrp = GetHRP()
     if not hrp then return end
-    if _G.OxideTweenTP then
+    if _G.ArcTweenTP then
         local TweenService=game:GetService("TweenService")
         local dist=(hrp.Position - cf.Position).Magnitude
         local tw=TweenService:Create(hrp, TweenInfo.new(math.clamp(dist/80,0.4,1.5), Enum.EasingStyle.Quad), {CFrame = cf})
@@ -612,7 +612,7 @@ local esp = {
     arrow = false, skeleton = false, halo = false, headCircle = false,
     teamCheck = false, rainbow = false,
     maxDistance = 1000, textSize = 13, font = 2,
-    color        = Color3.fromRGB(30, 90, 220),
+    color        = Color3.fromRGB(235, 235, 235),
     moneyColor   = Color3.fromRGB(80, 220, 120),
 }
 local playerObjects = {}
@@ -659,7 +659,7 @@ local function MakeBox(setup)
     end
     -- Always create a Highlight as the Chams target, even when Drawing exists.
     box.highlight = Instance.new("Highlight")
-    box.highlight.Name = "OxideDaHoodESP"
+    box.highlight.Name = "ArcDaHoodESP"
     box.highlight.FillTransparency = 0.6
     box.highlight.OutlineTransparency = 0.5
     box.highlight.Enabled = false
@@ -668,7 +668,7 @@ local function MakeBox(setup)
     table.insert(HUB.highlights, box.highlight)
     -- halo is a second highlight with outline-only for the glow effect
     box.halo = Instance.new("Highlight")
-    box.halo.Name = "OxideDaHoodHalo"
+    box.halo.Name = "ArcDaHoodHalo"
     box.halo.FillTransparency = 1
     box.halo.OutlineTransparency = 0
     box.halo.OutlineColor = Color3.fromRGB(255,255,255)
@@ -680,8 +680,7 @@ local function MakeBox(setup)
     box.dist = newDrawing("Text", { Color = Color3.fromRGB(255,255,255), Size = 11, Outline = true, Centre = true, Visible = false })
     box.hpText = newDrawing("Text", { Color = Color3.fromRGB(255,255,255), Size = 11, Outline = true, Centre = false, Visible = false })
     if hasDrawing then
-        box.tracer = newDrawing("Line", { Thickness = 1.2, Visible = false })
-        box.boxFill = newDrawing("Square", { Thickness = 1, Filled = true, Color = Color3.fromRGB(30,90,220), Transparency = 0.7, Visible = false })
+        box.tracer = newDrawing("Line", { Thickness = 1.2, Visible = false })box.boxFill = newDrawing("Square", { Thickness = 1, Filled = true, Color = Color3.fromRGB(235, 235, 235), Transparency = 0.7, Visible = false })
         box.hpOutline = newDrawing("Line", { Thickness = 3, Visible = false, Color = Color3.new(0,0,0) })
         box.hp = newDrawing("Line", { Thickness = 2, Visible = false })
         box.arrow = newDrawing("Triangle", { Thickness = 1, Filled = true, Visible = false })
@@ -856,7 +855,7 @@ task.spawn(function()
                             found[part] = true
                             if not moneyESP[part] then
                                 local hl = Instance.new("Highlight")
-                                hl.Name = "OxideDaHoodMoney"
+                                hl.Name = "ArcDaHoodMoney"
                                 hl.FillColor = esp.moneyColor
                                 hl.FillTransparency = 0.25
                                 hl.OutlineColor = esp.moneyColor
@@ -1708,10 +1707,10 @@ end
 -- Hook GunHandler.shoot + getAim for 100% silent aim coverage
 do
     local G = getgenv and getgenv() or _G
-    if G.OxideRageHooked then
+    if G.ArcRageHooked then
         print("Rage: already hooked, skipping")
     else
-        G.OxideRageHooked = true
+        G.ArcRageHooked = true
         local ok, mod = pcall(function() return require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("GunHandler")) end)
         -- also hook getAim for guns that use it
         if ok and mod and type(mod.getAim) == "function" then
@@ -1728,11 +1727,11 @@ do
                     end
                     return origAim(origin, range)
                 end)
-                G.OxideRageOrigAim = origAim
+                G.ArcRageOrigAim = origAim
                 print("Rage: GunHandler.getAim hooked")
             end
         end
-        if ok and mod and type(mod.shoot) == "function" and not G.OxideRageOrigShoot then
+        if ok and mod and type(mod.shoot) == "function" and not G.ArcRageOrigShoot then
             local HookFn = hookfunction or replaceclosure
             if HookFn then
                 local origShoot
@@ -1747,10 +1746,10 @@ do
                     end
                     return origShoot(p26)
                 end)
-                G.OxideRageOrigShoot = origShoot
+                G.ArcRageOrigShoot = origShoot
                 if not origShoot then
                     local plainOrig = mod.shoot
-                    G.OxideRageOrigShoot = plainOrig
+                    G.ArcRageOrigShoot = plainOrig
                     mod.shoot = function(p26)
                         if rage.silentEnabled and p26 and p26.Shooter == LocalPlayer.Character and p26.AimPosition then
                             local okT, tgt = pcall(getClosestTarget)
@@ -1761,7 +1760,7 @@ do
                 end
             else
                 local plainOrig = mod.shoot
-                G.OxideRageOrigShoot = plainOrig
+                G.ArcRageOrigShoot = plainOrig
                 mod.shoot = function(p26)
                     if rage.silentEnabled and p26 and p26.Shooter == LocalPlayer.Character and p26.AimPosition then
                         local okT, tgt = pcall(getClosestTarget)
@@ -1771,13 +1770,13 @@ do
                 end
             end
             print("Rage: GunHandler.shoot hooked for Silent Aim")
-        elseif G.OxideRageOrigShoot then
+        elseif G.ArcRageOrigShoot then
             print("Rage: using existing hook")
         else
-            if not G.OxideRageRayHooked then
-                G.OxideRageRayHooked = true
+            if not G.ArcRageRayHooked then
+                G.ArcRageRayHooked = true
                 local origRay = Workspace.Raycast
-                G.OxideRageOrigRay = origRay
+                G.ArcRageOrigRay = origRay
                 local HookFn2 = hookfunction
                 if HookFn2 then
                     local orig
@@ -1791,7 +1790,7 @@ do
                         end
                         return orig(self, origin, direction, params)
                     end)
-                    G.OxideRageOrigRay = orig
+                    G.ArcRageOrigRay = orig
                 else
                     local plainRay = Workspace.Raycast
                     Workspace.Raycast = function(self, origin, direction, params)
@@ -1918,7 +1917,7 @@ ServerSub:AddButton({
 ServerSub:AddSlider({
     Name = "Hop Player Max", Min = 5, Max = 28, Default = 12, Suffix = " players", Flag = "hop_playermax",
     Description = "Only hop to servers below this count",
-    Callback = function(v) _G.OxideHopMax = v end,
+    Callback = function(v) _G.ArcHopMax = v end,
 })
 ServerSub:AddButton({
     Name = "Hop To Low Player Server", Primary = true,
@@ -1935,7 +1934,7 @@ ServerSub:AddButton({
                 else error("no http") end
                 local data=HttpService:JSONDecode(raw)
                 local best=nil
-                local maxPlayers=_G.OxideHopMax or 12
+                local maxPlayers=_G.ArcHopMax or 12
                 for _,s in ipairs(data.data or {}) do
                     if type(s.playing)=="number" and s.playing < maxPlayers and s.playing < s.maxPlayers and s.id~=game.JobId then
                         if not best or s.playing < best.playing then best=s end
@@ -2179,7 +2178,7 @@ if HAS_CONFIG then
 else
     SettingsSub:AddParagraph({
         Title = "Config Saving Unavailable",
-        Text = "This Oxide UI build does not expose the flag/config system (requires v2.3+). All other features still work.",
+        Text = "This Arc UI build does not expose the flag/config system (requires v2.3+). All other features still work.",
     })
 end
 
@@ -2237,11 +2236,11 @@ SettingsSub:AddButton({
     Name = "Unload Hub",
     Callback = function()
         HUB.Unload()
-        _G.OxideDaHood = nil
+        _G.ArcDaHood = nil
     end,
 })
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- BOOT
 -- ══════════════════════════════════════════════════════════════════════════════
-Notify("Da Hood", "Oxide HUB loaded — $" .. FormatMoney(GetCurrency()), "Success", 3)
+Notify("Da Hood", "Arc HUB loaded — $" .. FormatMoney(GetCurrency()), "Success", 3)
