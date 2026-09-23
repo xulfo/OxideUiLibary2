@@ -1,23 +1,23 @@
 -- ═══ HUB STRIP POINT — when executed through the hub ScriptLoader, which injects
---     "local Library = _G.OxideLib" above this line instead. ═══
+--     "local Library = _G.ArcLib" above this line instead. ═══
 -- ══════════════════════════════════════════════════════════════════════════════
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- RE-EXECUTION GUARD + RESOURCE TRACKING
 -- ══════════════════════════════════════════════════════════════════════════════
 do
-    local prev = _G.OxideRivals
+    local prev = _G.ArcRivals
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false }
-_G.OxideRivals = HUB
+_G.ArcRivals = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | RIVALS",
+    Name = "Arc HUB | RIVALS",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.2,
 })
 
@@ -347,13 +347,13 @@ local rageConn = runSR.Heartbeat:Connect(function()
             local oldVel = myRoot.Velocity
             local oldRotVel = myRoot.RotVelocity
             myRoot.CFrame = desyncCF
-            runSR:BindToRenderStep("OxideRageRestore", 101, function()
+            runSR:BindToRenderStep("ArcRageRestore", 101, function()
                 if myRoot and myRoot.Parent then
                     myRoot.CFrame = oldCF
                     myRoot.Velocity = oldVel
                     myRoot.RotVelocity = oldRotVel
                 end
-                runSR:UnbindFromRenderStep("OxideRageRestore")
+                runSR:UnbindFromRenderStep("ArcRageRestore")
             end)
         end
     end
@@ -1677,7 +1677,7 @@ if HAS_CONFIG then
 else
     SettingsSub:AddParagraph({
         Title = "Config Saving Unavailable",
-        Text = "This Oxide UI build does not expose the flag/config system. All other features still work.",
+        Text = "This Arc UI build does not expose the flag/config system. All other features still work.",
     })
 end
 
@@ -1688,7 +1688,7 @@ local function Cleanup()
     rage.enabled = false
     equipLoopAlive = false
     table.clear(deflecting)
-    pcall(function() runSR:UnbindFromRenderStep("OxideRageRestore") end)
+    pcall(function() runSR:UnbindFromRenderStep("ArcRageRestore") end)
     noSpreadEnabled = false; ApplyNoSpread(false)
     rapidHitEnabled = false
     unlockEnabled = false; ApplyUnlockAll(false)
@@ -1723,11 +1723,11 @@ SettingsSub:AddButton({
     Name = "Unload Hub",
     Callback = function()
         HUB.Unload()
-        _G.OxideRivals = nil
+        _G.ArcRivals = nil
     end,
 })
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- BOOT
 -- ══════════════════════════════════════════════════════════════════════════════
-Notify("RIVALS", "Oxide HUB loaded", "Success", 3)
+Notify("RIVALS", "Arc HUB loaded", "Success", 3)
