@@ -1879,10 +1879,12 @@ function Library:CreateWindow(opts)
     startTagSystem()
 
     local logoAsset      = normalizeAssetId(opts.Logo or DEFAULT_LOGO)
-    -- Zoom factor applied to the logo inside its clipping holder. The default
-    -- asset is mostly transparent padding, so it needs a healthy zoom to read;
-    -- a caller-supplied logo is assumed to be already cropped.
-    local logoZoom       = math.clamp(tonumber(opts.LogoZoom) or (logoAsset == DEFAULT_LOGO and 2.4 or 1), 1, 6)
+    -- Zoom factor applied to the logo inside its clipping holder. The Arc asset
+    -- is a square canvas whose mark covers ~71% of the width and ~80% of the
+    -- height, so 1.1 renders it at ~88% of the holder without cropping any of
+    -- it (the old padded asset needed 2.4 for the same visual size). Callers
+    -- with a fully padded asset can still raise this via `LogoZoom`.
+    local logoZoom       = math.clamp(tonumber(opts.LogoZoom) or 1.1, 1, 6)
     local windowSize     = opts.Size or UDim2.fromOffset(700, 490)
     local windowPosition = opts.Position or UDim2.fromScale(0.5, 0.5)
     local guiName        = opts.GuiName or "ArcUI"
@@ -2419,15 +2421,12 @@ function Library:CreateWindow(opts)
         Parent = brandShimmer,
     })
     brandShimmerGradient:SetAttribute("ThemeGradient_Edge", "Accent")
-    -- The logo holder clips, and the image inside is scaled up by `logoZoom`.
-    -- This exists because the default logo asset has a lot of transparent
-    -- padding — with ScaleType.Fit the visible mark would only fill ~35% of
-    -- the box. Custom logos are usually tightly cropped, so they get no zoom
-    -- unless the caller opts in via `LogoZoom`.
-    local logoHolder = make("Frame", { Position=UDim2.fromOffset(9,9), Size=UDim2.fromOffset(46,46), BackgroundTransparency=1, ClipsDescendants=true, Parent=brand })
+    -- The logo holder clips, and the image inside is scaled by `logoZoom`, so
+    -- the mark lands at ~88% of this box without any of it being cut off.
+    local logoHolder = make("Frame", { Position=UDim2.fromOffset(11,12), Size=UDim2.fromOffset(40,40), BackgroundTransparency=1, ClipsDescendants=true, Parent=brand })
     local brandLogo = make("ImageLabel",{Name="Logo",Image=logoAsset,BackgroundTransparency=1,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),Size=UDim2.fromScale(logoZoom,logoZoom),ScaleType=Enum.ScaleType.Fit,Parent=logoHolder})
-    make("TextLabel",{Text=opts.Name or "Arc UI",Font=Enum.Font.GothamBold,TextSize=13,TextColor3=C.White,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,BackgroundTransparency=1,Position=UDim2.fromOffset(64,16),Size=UDim2.new(1,-72,0,17),Parent=brand})
-    make("TextLabel",{Text=opts.BrandSubtitle or ("Arc FREE..."..Library.Version),Font=Enum.Font.GothamMedium,TextSize=9,TextColor3=C.TextDim,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,BackgroundTransparency=1,Position=UDim2.fromOffset(64,35),Size=UDim2.new(1,-72,0,13),Parent=brand})
+    make("TextLabel",{Text=opts.Name or "Arc UI",Font=Enum.Font.GothamBold,TextSize=13,TextColor3=C.White,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,BackgroundTransparency=1,Position=UDim2.fromOffset(58,16),Size=UDim2.new(1,-66,0,17),Parent=brand})
+    make("TextLabel",{Text=opts.BrandSubtitle or ("Arc FREE..."..Library.Version),Font=Enum.Font.GothamMedium,TextSize=9,TextColor3=C.TextDim,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,BackgroundTransparency=1,Position=UDim2.fromOffset(58,35),Size=UDim2.new(1,-66,0,13),Parent=brand})
 
     -- Player mini-card (fills the sidebar and gives identity at a glance)
     local lp = Players.LocalPlayer
@@ -2439,8 +2438,10 @@ function Library:CreateWindow(opts)
     make("TextLabel",{Text=lp.DisplayName,Font=Enum.Font.GothamBold,TextSize=12,TextColor3=C.White,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,BackgroundTransparency=1,Position=UDim2.fromOffset(52,10),Size=UDim2.new(1,-60,0,15),Parent=pcard})
     make("TextLabel",{Text="@"..lp.Name,Font=Enum.Font.Gotham,TextSize=10,TextColor3=C.TextDim,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,BackgroundTransparency=1,Position=UDim2.fromOffset(52,28),Size=UDim2.new(1,-60,0,13),Parent=pcard})
 
-    -- Faint centered logo watermark fills the otherwise empty sidebar space
-    local watermarkHolder = make("Frame",{Name="Watermark",BackgroundTransparency=1,ClipsDescendants=true,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0.5,0,0.5,24),Size=UDim2.fromOffset(156,156),ZIndex=0,Parent=sidebar})
+    -- Faint centered logo watermark fills the otherwise empty sidebar space.
+    -- Kept small on purpose: the mark is a solid silhouette here, so anything
+    -- close to the sidebar width reads as a giant pasted-on logo.
+    local watermarkHolder = make("Frame",{Name="Watermark",BackgroundTransparency=1,ClipsDescendants=true,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0.5,0,0.5,24),Size=UDim2.fromOffset(96,96),ZIndex=0,Parent=sidebar})
 
     -- ── Travelling outline around the logo silhouette ─────────────────────
     -- UIStroke cannot trace an image's alpha (ApplyStrokeMode only covers text
@@ -2466,8 +2467,8 @@ function Library:CreateWindow(opts)
     end
 
     if logoGlowOn then
-        local RING_STEPS = 16     -- at a 2.5px push this keeps the rim gap-free
-        local RING_PUSH  = 2.5    -- outline thickness in pixels
+        local RING_STEPS = 16     -- at a 1.6px push this keeps the rim gap-free
+        local RING_PUSH  = 1.6    -- outline thickness in pixels
         for i = 1, RING_STEPS do
             local ang = (i - 1) / RING_STEPS * math.pi * 2
             make("ImageLabel", {
