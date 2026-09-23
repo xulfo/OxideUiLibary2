@@ -1,22 +1,22 @@
 -- ═══ HUB STRIP POINT — when executed through the hub ScriptLoader, which injects
---     "local Library = _G.OxideLib" above this line instead. ═══
+--     "local Library = _G.ArcLib" above this line instead. ═══
 -- ══════════════════════════════════════════════════════════════════════════════
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- RE-EXECUTION GUARD + RESOURCE TRACKING
 -- ══════════════════════════════════════════════════════════════════════════════
 do
-    local prev = _G.OxideLeafSim
+    local prev = _G.ArcLeafSim
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, dead = false }
-_G.OxideLeafSim = HUB
+_G.ArcLeafSim = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | 🍂 Spiel",
+    Name = "Arc HUB | 🍂 Spiel",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.2,
 })
 
@@ -60,7 +60,7 @@ local function safeCallback(fn)
     return function(...)
         local ok, err = pcall(fn, ...)
         if not ok then
-            pcall(Notify, "Oxide HUB", "Error: " .. tostring(err), "Error", 4)
+            pcall(Notify, "Arc HUB", "Error: " .. tostring(err), "Error", 4)
         end
     end
 end
@@ -1119,9 +1119,9 @@ for _ = 1, 8 do
     task.wait(1)
 end
 if GAME_OK then
-    Notify("Oxide HUB", "Game API connected", "Success", 2)
+    Notify("Arc HUB", "Game API connected", "Success", 2)
 else
-    Notify("Oxide HUB", "Game API unavailable (" .. tostring(LeafSimErr or "?") .. ")", "Error", 4)
+    Notify("Arc HUB", "Game API unavailable (" .. tostring(LeafSimErr or "?") .. ")", "Error", 4)
 end
 
 -- Extras are enabled by default: apply the buffs + hooks as soon as the game
@@ -1161,5 +1161,5 @@ function HUB.Unload()
     pcall(function()
         if Window and Window.Destroy then Window:Destroy() end
     end)
-    _G.OxideLeafSim = nil
+    _G.ArcLeafSim = nil
 end
