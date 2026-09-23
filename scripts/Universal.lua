@@ -3,18 +3,18 @@
 -- hub can be re-executed without stacking render loops or duplicate ESP.
 -- ══════════════════════════════════════════════════════════════════════════════
 do
-    local prev = _G.OxideUniversal
+    local prev = _G.ArcUniversal
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false }
-_G.OxideUniversal = HUB
+_G.ArcUniversal = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | Universal",
+    Name = "Arc HUB | Universal",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.5,
 })
 
@@ -33,7 +33,7 @@ local LocalPlayer = Players.LocalPlayer
 local Camera      = Workspace.CurrentCamera
 
 -- ══════════════════════════════════════════════════════════════════════════════
--- CONFIG / FLAG PERSISTENCE (Oxide UI v2.3+ flag system; feature-guarded)
+-- CONFIG / FLAG PERSISTENCE (Arc UI v2.3+ flag system; feature-guarded)
 -- ══════════════════════════════════════════════════════════════════════════════
 local HAS_CONFIG  = type(Library.SaveConfig) == "function"
     and type(Library.LoadConfig) == "function"
@@ -273,8 +273,8 @@ CharSub:AddToggle({
     Callback = function(v) antiAFK = v end,
 })
 
-if not _G.OxideUniversalAntiAFK then
-    _G.OxideUniversalAntiAFK = true
+if not _G.ArcUniversalAntiAFK then
+    _G.ArcUniversalAntiAFK = true
     LocalPlayer.Idled:Connect(function()
         if antiAFK then
             pcall(function()
@@ -524,10 +524,10 @@ local esp = {
     teamCheck = false, friendCheck = false, visibleCheck = false, rainbow = false, smooth = true,
     distanceFade = false, chamsDepth = "AlwaysOnTop",
     maxDistance = 1000, textSize = 14, font = 2,
-    color        = Color3.fromRGB(30, 90, 220),
+    color        = Color3.fromRGB(235, 235, 235),
     visibleColor = Color3.fromRGB(95, 220, 120),
     hiddenColor  = Color3.fromRGB(235, 75, 75),
-    friendColor  = Color3.fromRGB(95, 150, 255),
+    friendColor  = Color3.fromRGB(170, 170, 170),
     npcColor     = Color3.fromRGB(235, 200, 70),
 }
 local espObjects = {}  -- [player] = obj
@@ -570,7 +570,7 @@ local function createEspObject()
     espCounter = espCounter + 1
 
     local hl = Instance.new("Highlight")
-    hl.Name = "OxideESP_" .. espCounter
+    hl.Name = "ArcESP_" .. espCounter
     hl.FillTransparency = esp.chamsFillT
     hl.OutlineTransparency = esp.chamsOutlineT
     hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
@@ -1135,10 +1135,10 @@ EspSub:AddSlider({
 })
 
 EspSub:AddSection("Colors")
-EspSub:AddColorPicker({ Name = "Main Color", Default = Color3.fromRGB(30, 90, 220), Flag = "esp_color", Callback = function(c) esp.color = c end })
+EspSub:AddColorPicker({ Name = "Main Color", Default = Color3.fromRGB(235, 235, 235), Flag = "esp_color", Callback = function(c) esp.color = c end })
 EspSub:AddColorPicker({ Name = "Visible Color", Default = Color3.fromRGB(95, 220, 120), Flag = "esp_viscolor", Callback = function(c) esp.visibleColor = c end })
 EspSub:AddColorPicker({ Name = "Hidden Color", Default = Color3.fromRGB(235, 75, 75), Flag = "esp_hidcolor", Callback = function(c) esp.hiddenColor = c end })
-EspSub:AddColorPicker({ Name = "Friend Color", Default = Color3.fromRGB(95, 150, 255), Flag = "esp_friendcolor", Callback = function(c) esp.friendColor = c end })
+EspSub:AddColorPicker({ Name = "Friend Color", Default = Color3.fromRGB(170, 170, 170), Flag = "esp_friendcolor", Callback = function(c) esp.friendColor = c end })
 EspSub:AddColorPicker({ Name = "NPC Color", Default = Color3.fromRGB(235, 200, 70), Flag = "esp_npccolor", Callback = function(c) esp.npcColor = c end })
 
 
@@ -1199,7 +1199,7 @@ local aim = {
     altKey     = nil,       -- optional alternate hold key
     toggleMode = false,     -- press to toggle lock instead of hold
     showFov    = true,
-    fovColor   = Color3.fromRGB(30, 90, 220),
+    fovColor   = Color3.fromRGB(235, 235, 235),
 }
 
 -- Input / lock state
@@ -1368,7 +1368,7 @@ AimSub:AddToggle({
     end,
 })
 AimSub:AddColorPicker({
-    Name = "FOV Circle Color", Default = Color3.fromRGB(30, 90, 220), Flag = "aim_fovcolor",
+    Name = "FOV Circle Color", Default = Color3.fromRGB(235, 235, 235), Flag = "aim_fovcolor",
     Callback = function(c) aim.fovColor = c end,
 })
 
@@ -1485,7 +1485,7 @@ if HAS_CONFIG then
 else
     SettingsSub:AddParagraph({
         Title = "Config Saving Unavailable",
-        Text = "This Oxide UI build does not expose the flag/config system (requires v2.3+). All other features still work.",
+        Text = "This Arc UI build does not expose the flag/config system (requires v2.3+). All other features still work.",
     })
 end
 
@@ -1527,8 +1527,8 @@ SettingsSub:AddButton({
     Name = "Unload Hub",
     Callback = function()
         HUB.Unload()
-        _G.OxideUniversal = nil
+        _G.ArcUniversal = nil
     end,
 })
 
-Notify("Oxide HUB", "Universal loaded successfully", "Success", 4)
+Notify("Arc HUB", "Universal loaded successfully", "Success", 4)
