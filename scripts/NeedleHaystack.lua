@@ -1,16 +1,16 @@
 -- === HUB STRIP POINT - when executed through the hub ScriptLoader, which injects
---     "local Library = _G.OxideLib" above this line instead. ===
+--     "local Library = _G.ArcLib" above this line instead. ===
 -- ==============================================================================
 
 -- ==============================================================================
 -- RE-EXECUTION GUARD + RESOURCE TRACKING
 -- ==============================================================================
 do
-    local prev = _G.OxideNeedleHaystack
+    local prev = _G.ArcNeedleHaystack
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, loops = {} }
-_G.OxideNeedleHaystack = HUB
+_G.ArcNeedleHaystack = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackHighlight(h) if h then table.insert(HUB.highlights, h) end; return h end
 
@@ -23,7 +23,7 @@ local function TrackLoop(id, fn, interval)
             if (interval or 0) <= 0 or (now - last) >= interval then
                 last = now
                 local ok, err = pcall(fn)
-                if not ok then warn("[Oxide NeedleHaystack] loop error " .. tostring(id) .. ": " .. tostring(err)) end
+                if not ok then warn("[Arc NeedleHaystack] loop error " .. tostring(id) .. ": " .. tostring(err)) end
             end
             task.wait()
         end
@@ -34,9 +34,9 @@ local function KillLoop(id)
 end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | Search For The Needle",
+    Name = "Arc HUB | Search For The Needle",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.0,
 })
 
@@ -89,7 +89,7 @@ local function safeCallback(fn)
     return function(...)
         local ok, err = pcall(fn, ...)
         if not ok then
-            pcall(Notify, "Oxide HUB", "Error: " .. tostring(err), "Error", 4)
+            pcall(Notify, "Arc HUB", "Error: " .. tostring(err), "Error", 4)
         end
     end
 end
@@ -285,7 +285,7 @@ end
 -- ==============================================================================
 local RAINBOW_COLOR = Color3.fromRGB(255, 90, 255)
 local NEEDLE_COLOR = Color3.fromRGB(255, 60, 60)
-local GEM_COLOR = Color3.fromRGB(90, 190, 255)
+local GEM_COLOR = Color3.fromRGB(235, 235, 235)
 
 local function clearEsp()
     for _, h in ipairs(HUB.highlights) do
@@ -297,7 +297,7 @@ end
 local function espPart(part, color)
     if not part or not part.Parent then return nil end
     local h = Instance.new("Highlight")
-    h.Name = "OxideNeedleEsp"
+    h.Name = "ArcNeedleEsp"
     h.FillColor = color or RAINBOW_COLOR
     h.OutlineColor = Color3.new(1, 1, 1)
     h.FillTransparency = 0.45
@@ -311,7 +311,7 @@ end
 local function espAtPosition(pos, color)
     if not pos then return end
     for _, part in ipairs(Workspace:GetDescendants()) do
-        if part:IsA("BasePart") and part.Name:lower():find("hay", 1, true) and not part:FindFirstChild("OxideNeedleEsp") then
+        if part:IsA("BasePart") and part.Name:lower():find("hay", 1, true) and not part:FindFirstChild("ArcNeedleEsp") then
             if (part.Position - pos).Magnitude < 1.2 then
                 espPart(part, color)
                 return
@@ -341,7 +341,7 @@ TrackLoop("esp", function()
             end
         end
         for _, part in ipairs(S._gemCache.parts or {}) do
-            if part.Parent and not part:FindFirstChild("OxideNeedleEsp") then
+            if part.Parent and not part:FindFirstChild("ArcNeedleEsp") then
                 espPart(part, GEM_COLOR)
             end
         end
@@ -362,7 +362,7 @@ TrackLoop("esp", function()
                 end
                 local parts = S._needleCache.parts or {}
                 for _, part in ipairs(parts) do
-                    if part.Parent and not part:FindFirstChild("OxideNeedleEsp") then
+                    if part.Parent and not part:FindFirstChild("ArcNeedleEsp") then
                         espPart(part, NEEDLE_COLOR)
                     end
                 end
@@ -640,7 +640,7 @@ TrackLoop("sell", function()
         SellNow()
     end)
     S._selling = false
-    if not ok then warn("[Oxide NeedleHaystack] sell error: " .. tostring(err)) end
+    if not ok then warn("[Arc NeedleHaystack] sell error: " .. tostring(err)) end
     S._lastSell = now
 end, 0.3)
 
@@ -1316,7 +1316,7 @@ SettingsSub:AddKeybind({
 SettingsSub:AddButton({
     Name = "Unload HUB",
     Callback = safeCallback(function()
-        Notify("Oxide HUB", "Script unloaded", "Info")
+        Notify("Arc HUB", "Script unloaded", "Info")
         task.wait(0.3)
         pcall(function() Window:Destroy() end)
     end),
@@ -1352,7 +1352,7 @@ local function ResyncAll()
         S.fullbright     = Window:Get("fullbright", false)
         if not S.espEnabled then clearEsp() end
     end)
-    if not ok then warn("[Oxide NeedleHaystack] ResyncAll: " .. tostring(err)) end
+    if not ok then warn("[Arc NeedleHaystack] ResyncAll: " .. tostring(err)) end
 end
 
 -- ==============================================================================
@@ -1367,7 +1367,7 @@ function HUB.Unload()
     HUB.conns = {}
     clearEsp()
     if HUB._StopFly then pcall(HUB._StopFly) end
-    local sg = LP:FindFirstChild("PlayerGui") and LP.PlayerGui:FindFirstChild("OxideNeedleHaystackUI")
+    local sg = LP:FindFirstChild("PlayerGui") and LP.PlayerGui:FindFirstChild("ArcNeedleHaystackUI")
     if sg then pcall(sg.Destroy, sg) end
     if HAS_CONFIG then
         pcall(function() Library.SaveConfig(CONFIG_NAME) end)
