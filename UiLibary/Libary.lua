@@ -2440,9 +2440,10 @@ function Library:CreateWindow(opts)
     make("TextLabel",{Text="@"..lp.Name,Font=Enum.Font.Gotham,TextSize=10,TextColor3=C.TextDim,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,BackgroundTransparency=1,Position=UDim2.fromOffset(52,28),Size=UDim2.new(1,-60,0,13),Parent=pcard})
 
     -- Faint centered logo watermark fills the otherwise empty sidebar space.
-    -- Kept small on purpose: the mark is a solid silhouette here, so anything
-    -- close to the sidebar width reads as a giant pasted-on logo.
-    local watermarkHolder = make("Frame",{Name="Watermark",BackgroundTransparency=1,ClipsDescendants=true,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0.5,0,0.5,24),Size=UDim2.fromOffset(96,96),ZIndex=0,Parent=sidebar})
+    -- The box is sized so the mark itself lands around 113px tall (about 60% of
+    -- the sidebar width): clearly present, but still a backdrop rather than a
+    -- pasted-on logo.
+    local watermarkHolder = make("Frame",{Name="Watermark",BackgroundTransparency=1,ClipsDescendants=true,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0.5,0,0.5,24),Size=UDim2.fromOffset(128,128),ZIndex=0,Parent=sidebar})
 
     -- ── Travelling outline around the logo silhouette ─────────────────────
     -- UIStroke cannot trace an image's alpha (ApplyStrokeMode only covers text
