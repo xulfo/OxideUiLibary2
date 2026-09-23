@@ -1881,10 +1881,11 @@ function Library:CreateWindow(opts)
     local logoAsset      = normalizeAssetId(opts.Logo or DEFAULT_LOGO)
     -- Zoom factor applied to the logo inside its clipping holder. The Arc asset
     -- is a square canvas whose mark covers ~71% of the width and ~80% of the
-    -- height, so 1.1 renders it at ~88% of the holder without cropping any of
-    -- it (the old padded asset needed 2.4 for the same visual size). Callers
-    -- with a fully padded asset can still raise this via `LogoZoom`.
-    local logoZoom       = math.clamp(tonumber(opts.LogoZoom) or 1.1, 1, 6)
+    -- height, so 1.1 lands it at ~88% of the holder without cropping any of it
+    -- (the old padded asset needed 2.4 for the same visual size). Callers with
+    -- their own asset get no zoom, since those are assumed cropped already;
+    -- `LogoZoom` overrides either case.
+    local logoZoom       = math.clamp(tonumber(opts.LogoZoom) or (logoAsset == DEFAULT_LOGO and 1.1 or 1), 1, 6)
     local windowSize     = opts.Size or UDim2.fromOffset(700, 490)
     local windowPosition = opts.Position or UDim2.fromScale(0.5, 0.5)
     local guiName        = opts.GuiName or "ArcUI"
@@ -2422,7 +2423,7 @@ function Library:CreateWindow(opts)
     })
     brandShimmerGradient:SetAttribute("ThemeGradient_Edge", "Accent")
     -- The logo holder clips, and the image inside is scaled by `logoZoom`, so
-    -- the mark lands at ~88% of this box without any of it being cut off.
+    -- the Arc mark lands at ~88% of this box without any of it being cut off.
     local logoHolder = make("Frame", { Position=UDim2.fromOffset(11,12), Size=UDim2.fromOffset(40,40), BackgroundTransparency=1, ClipsDescendants=true, Parent=brand })
     local brandLogo = make("ImageLabel",{Name="Logo",Image=logoAsset,BackgroundTransparency=1,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),Size=UDim2.fromScale(logoZoom,logoZoom),ScaleType=Enum.ScaleType.Fit,Parent=logoHolder})
     make("TextLabel",{Text=opts.Name or "Arc UI",Font=Enum.Font.GothamBold,TextSize=13,TextColor3=C.White,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,BackgroundTransparency=1,Position=UDim2.fromOffset(58,16),Size=UDim2.new(1,-66,0,17),Parent=brand})
