@@ -1,27 +1,27 @@
 -- ═══ HUB STRIP POINT — when executed through the hub ScriptLoader, which injects
---     "local Library = _G.OxideLib" above this line instead. ═══
+--     "local Library = _G.ArcLib" above this line instead. ═══
 -- ══════════════════════════════════════════════════════════════════════════════
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- RE-EXECUTION GUARD + RESOURCE TRACKING
 -- ══════════════════════════════════════════════════════════════════════════════
 do
-    local prev = _G.OxideChickenFighter
+    local prev = _G.ArcChickenFighter
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, dead = false }
-_G.OxideChickenFighter = HUB
+_G.ArcChickenFighter = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | Chicken Fighter",
+    Name = "Arc HUB | Chicken Fighter",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.5,
 })
 
 -- ══════════════════════════════════════════════════════════════════════════════
--- CONFIG / FLAG PERSISTENCE (Oxide UI v2.3+ flag system; feature-guarded)
+-- CONFIG / FLAG PERSISTENCE (Arc UI v2.3+ flag system; feature-guarded)
 -- ══════════════════════════════════════════════════════════════════════════════
 local HAS_CONFIG  = type(Library.SaveConfig) == "function"
     and type(Library.LoadConfig) == "function"
@@ -60,7 +60,7 @@ local function safeCallback(fn)
     return function(...)
         local ok, err = pcall(fn, ...)
         if not ok then
-            pcall(Notify, "Oxide HUB", "Error: " .. tostring(err), "Error", 4)
+            pcall(Notify, "Arc HUB", "Error: " .. tostring(err), "Error", 4)
         end
     end
 end
@@ -1199,10 +1199,10 @@ BoostsSub:AddButton({
         local roster = GetRoster()
         local money = GetMoney()
         local active = GetActiveChicken(roster)
-        print("[Oxide] ═══ CHICKEN FIGHTER ═══")
-        print("[Oxide] Money:", tostring(money))
-        print("[Oxide] Chickens:", #(roster and roster.chickens or {}), "| Active:", active and (active.id .. " lvl " .. tostring(active.level) .. " " .. tostring(active.rarity)) or "none")
-        print("[Oxide] Boosts:", FormatBoostText():gsub("\n", " | "))
+        print("[Arc] ═══ CHICKEN FIGHTER ═══")
+        print("[Arc] Money:", tostring(money))
+        print("[Arc] Chickens:", #(roster and roster.chickens or {}), "| Active:", active and (active.id .. " lvl " .. tostring(active.level) .. " " .. tostring(active.rarity)) or "none")
+        print("[Arc] Boosts:", FormatBoostText():gsub("\n", " | "))
         Notify("Boosts", "Data dumped to console", "Success", 3)
     end),
 })
@@ -1304,8 +1304,8 @@ AfkSub:AddToggle({
     Name = "Anti-AFK", Default = true, Flag = "anti_afk",
     Callback = function(v) antiAFK = v end,
 })
-if not _G.OxideChickenFighterAntiAFK then
-    _G.OxideChickenFighterAntiAFK = true
+if not _G.ArcChickenFighterAntiAFK then
+    _G.ArcChickenFighterAntiAFK = true
     LocalPlayer.Idled:Connect(function()
         if antiAFK and not HUB.dead then
             pcall(function()
@@ -1611,9 +1611,9 @@ for _ = 1, 8 do
     task.wait(1)
 end
 if GAME_OK then
-    Notify("Oxide HUB", "Game API connected", "Success", 2)
+    Notify("Arc HUB", "Game API connected", "Success", 2)
 else
-    Notify("Oxide HUB", "Game API unavailable - Auto tabs disabled", "Error", 4)
+    Notify("Arc HUB", "Game API unavailable - Auto tabs disabled", "Error", 4)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -1631,5 +1631,5 @@ function HUB.Unload()
     pcall(function()
         if Window and Window.Destroy then Window:Destroy() end
     end)
-    _G.OxideChickenFighter = nil
+    _G.ArcChickenFighter = nil
 end
