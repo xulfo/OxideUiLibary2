@@ -1,9 +1,9 @@
 -- WINDOW
 -- ══════════════════════════════════════════════════════════════════════════════
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB",
+    Name = "Arc HUB",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.65,
 })
 
@@ -98,7 +98,7 @@ local function safeCallback(fn)
     return function(...)
         local ok, err = pcall(fn, ...)
         if not ok then
-            pcall(Notify, "Oxide HUB", "Error: " .. tostring(err), "Error", 4)
+            pcall(Notify, "Arc HUB", "Error: " .. tostring(err), "Error", 4)
         end
     end
 end
@@ -109,7 +109,7 @@ local function safeSpawn(fn)
     task.spawn(function()
         local ok, err = pcall(fn)
         if not ok then
-            pcall(Notify, "Oxide HUB", "Engine error: " .. tostring(err), "Error", 4)
+            pcall(Notify, "Arc HUB", "Engine error: " .. tostring(err), "Error", 4)
         end
     end)
 end
@@ -788,7 +788,7 @@ SettingsSub:AddButton({
         sellEnabled = false
         collectEnabled = false
         if type(RestoreDigHooks) == "function" then RestoreDigHooks() end
-        Notify("Oxide HUB", "Script unloaded", "Info")
+        Notify("Arc HUB", "Script unloaded", "Info")
         pcall(function() Window:Destroy() end)
     end),
 })
