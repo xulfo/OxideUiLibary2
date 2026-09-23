@@ -1,5 +1,5 @@
 -- ══════════════════════════════════════════════════════════════════════════════
--- OXIDE HUB — Universal ScriptLoader (free)
+-- ARC HUB — Universal ScriptLoader (free)
 -- Checks game.PlaceId → loads library ONCE → downloads & runs the right script.
 -- Fully open source: everything is plain Lua on GitHub, no encryption.
 --
@@ -49,18 +49,18 @@ local LIB_MARKER  = "ChatFree"   -- marker string that ONLY exists in the curren
 local CACHE_TTL   = 300          -- seconds a downloaded file is reused before a refresh
 
 -- Session-wide download cache (survives re-executions of this script).
-local OXIDE_CACHE = _G.OxideLoaderCache or {}
-_G.OxideLoaderCache = OXIDE_CACHE
+local ARC_CACHE = _G.ArcLoaderCache or {}
+_G.ArcLoaderCache = ARC_CACHE
 
 local function cacheGet(key)
-    local entry = OXIDE_CACHE[key]
+    local entry = ARC_CACHE[key]
     if entry and os.clock() - entry.at <= CACHE_TTL then
         return entry.value
     end
     return nil
 end
 local function cacheSet(key, value)
-    OXIDE_CACHE[key] = { at = os.clock(), value = value }
+    ARC_CACHE[key] = { at = os.clock(), value = value }
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -186,7 +186,7 @@ local function FetchApiRaw(apiPath)
         Method = "GET",
         Headers = {
             ["Accept"]     = "application/vnd.github.raw+json",
-            ["User-Agent"] = "oxide-hub",
+            ["User-Agent"] = "arc-hub",
         },
     })
     if ok and type(req) == "table" and req.StatusCode == 200
@@ -285,7 +285,7 @@ local function LoadGameScript(lib, scriptName)
     -- Use a global library binding here. Some scripts are close to Luau's
     -- 200-local register limit, so adding another local in the loader can make
     -- the stripped chunk fail before its UI is created.
-    local fullSource = "Library = _G.OxideLib;\n" .. content
+    local fullSource = "Library = _G.ArcLib;\n" .. content
 
     local chunk, compileErr = loadstring(fullSource)
     if not chunk then
@@ -311,8 +311,8 @@ print("[Loader] PlaceId:", placeId, " GameId:", gameId, "→", scriptName)
 local t0 = os.clock()
 local Library = LoadLibrary()
 
--- Expose globally (stripped scripts grab it via local Library = _G.OxideLib)
-_G.OxideLib = Library
+-- Expose globally (stripped scripts grab it via local Library = _G.ArcLib)
+_G.ArcLib = Library
 
 local scriptCached = LoadGameScript(Library, scriptName)
 print(string.format("[Loader] %s is now running (script %s, total %.2fs).",
