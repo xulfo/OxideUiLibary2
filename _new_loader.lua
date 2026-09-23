@@ -6,8 +6,8 @@
 local LIB_URL = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/UiLibary/Libary.lua"
 local SCRIPTS_BASE = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/scripts/"
 local CACHE_TTL = 300
-local CACHE = _G.OxideLoaderCache or {}
-_G.OxideLoaderCache = CACHE
+local CACHE = _G.ArcLoaderCache or {}
+_G.ArcLoaderCache = CACHE
 
 local function FetchText(url)
     local ok, src = pcall(game.HttpGet, game, url)
@@ -70,7 +70,7 @@ local function LoadGameScript(lib, scriptName)
     if not ok then
         error("[Loader] Failed to download game script: " .. scriptName, 0)
     end
-    local fullSource = "Library = _G.OxideLib;\n" .. content
+    local fullSource = "Library = _G.ArcLib;\n" .. content
     local chunk, compileErr = loadstring(fullSource)
     if not chunk then
         error("[Loader] Game script compile error (" .. scriptName .. "): " .. tostring(compileErr), 0)
@@ -101,5 +101,5 @@ local placeId = game.PlaceId
 local scriptName = ResolveScript(placeId)
 
 local Library = LoadLibrary()
-_G.OxideLib = Library
+_G.ArcLib = Library
 LoadGameScript(Library, scriptName)
