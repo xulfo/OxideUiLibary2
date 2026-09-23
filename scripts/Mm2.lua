@@ -1,23 +1,23 @@
 -- ═══ HUB STRIP POINT — when executed through the hub ScriptLoader, which injects
---     "local Library = _G.OxideLib" above this line instead. ═══
+--     "local Library = _G.ArcLib" above this line instead. ═══
 -- ══════════════════════════════════════════════════════════════════════════════
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- RE-EXECUTION GUARD + RESOURCE TRACKING
 -- ══════════════════════════════════════════════════════════════════════════════
 do
-    local prev = _G.OxideMm2
+    local prev = _G.ArcMm2
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false }
-_G.OxideMm2 = HUB
+_G.ArcMm2 = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | MM2",
+    Name = "Arc HUB | MM2",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.2,
 })
 
@@ -381,8 +381,8 @@ CharSub:AddToggle({
     Callback = function(v) antiAFK = v end,
 })
 
-if not _G.OxideMm2AntiAFK then
-    _G.OxideMm2AntiAFK = true
+if not _G.ArcMm2AntiAFK then
+    _G.ArcMm2AntiAFK = true
     LocalPlayer.Idled:Connect(function()
         if not antiAFK then return end
         pcall(function()
@@ -599,13 +599,13 @@ TpMiscSub:AddButton({
 TpMiscSub:AddToggle({
     Name = "Tween Teleport", Default = false, Flag = "tp_tween",
     Description = "Smooth tween instead of instant CFrame",
-    Callback = function(v) _G.OxideTweenTP = v end,
+    Callback = function(v) _G.ArcTweenTP = v end,
 })
 -- patch existing city/bank buttons to respect tween flag
 local function tweenTP(cf)
     local hrp = GetHRP()
     if not hrp then return end
-    if _G.OxideTweenTP then
+    if _G.ArcTweenTP then
         local TweenService=game:GetService("TweenService")
         local dist=(hrp.Position - cf.Position).Magnitude
         local tw=TweenService:Create(hrp, TweenInfo.new(math.clamp(dist/80,0.4,1.5), Enum.EasingStyle.Quad), {CFrame = cf})
@@ -630,7 +630,7 @@ local esp = {
     roleESP = true, coinESP = false, gunESP = false,
     teamCheck = false, rainbow = false,
     maxDistance = 1000, textSize = 13, font = 2,
-    color        = Color3.fromRGB(30, 90, 220),
+    color        = Color3.fromRGB(235, 235, 235),
     coinColor    = Color3.fromRGB(255, 220, 60),
 }
 local playerObjects = {}
@@ -677,7 +677,7 @@ local function MakeBox(setup)
     end
     -- Always create a Highlight as the Chams target, even when Drawing exists.
     box.highlight = Instance.new("Highlight")
-    box.highlight.Name = "OxideMm2ESP"
+    box.highlight.Name = "ArcMm2ESP"
     box.highlight.FillTransparency = 0.6
     box.highlight.OutlineTransparency = 0.5
     box.highlight.Enabled = false
@@ -686,7 +686,7 @@ local function MakeBox(setup)
     table.insert(HUB.highlights, box.highlight)
     -- halo is a second highlight with outline-only for the glow effect
     box.halo = Instance.new("Highlight")
-    box.halo.Name = "OxideMm2Halo"
+    box.halo.Name = "ArcMm2Halo"
     box.halo.FillTransparency = 1
     box.halo.OutlineTransparency = 0
     box.halo.OutlineColor = Color3.fromRGB(255,255,255)
@@ -698,8 +698,7 @@ local function MakeBox(setup)
     box.dist = newDrawing("Text", { Color = Color3.fromRGB(255,255,255), Size = 11, Outline = true, Centre = true, Visible = false })
     box.hpText = newDrawing("Text", { Color = Color3.fromRGB(255,255,255), Size = 11, Outline = true, Centre = false, Visible = false })
     if hasDrawing then
-        box.tracer = newDrawing("Line", { Thickness = 1.2, Visible = false })
-        box.boxFill = newDrawing("Square", { Thickness = 1, Filled = true, Color = Color3.fromRGB(30,90,220), Transparency = 0.7, Visible = false })
+        box.tracer = newDrawing("Line", { Thickness = 1.2, Visible = false })box.boxFill = newDrawing("Square", { Thickness = 1, Filled = true, Color = Color3.fromRGB(235, 235, 235), Transparency = 0.7, Visible = false })
         box.hpOutline = newDrawing("Line", { Thickness = 3, Visible = false, Color = Color3.new(0,0,0) })
         box.hp = newDrawing("Line", { Thickness = 2, Visible = false })
         box.arrow = newDrawing("Triangle", { Thickness = 1, Filled = true, Visible = false })
@@ -1712,8 +1711,8 @@ end
 -- Robust hook: try GunHandler module (MM2), then fall back to Raycast hook
 do
     local G = getgenv and getgenv() or _G
-    if not G.OxideSheriffHooked then
-        G.OxideSheriffHooked = true
+    if not G.ArcSheriffHooked then
+        G.ArcSheriffHooked = true
         local mod
         pcall(function() mod = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("GunHandler")) end)
         local HookFn = hookfunction or replaceclosure
@@ -1728,7 +1727,7 @@ do
                 end
                 return orig(p26)
             end)
-            G.OxideSheriffOrigShoot = orig
+            G.ArcSheriffOrigShoot = orig
             print("Sheriff: GunHandler.shoot hooked")
         elseif mod and type(mod.getAim) == "function" and HookFn then
             local orig
@@ -1739,12 +1738,12 @@ do
                 end
                 return orig(origin, range)
             end)
-            G.OxideSheriffOrigAim = orig
+            G.ArcSheriffOrigAim = orig
             print("Sheriff: GunHandler.getAim hooked")
         else
             -- Fallback: hook Workspace.Raycast so the gun's ray is redirected
-            if not G.OxideSheriffRayHooked then
-                G.OxideSheriffRayHooked = true
+            if not G.ArcSheriffRayHooked then
+                G.ArcSheriffRayHooked = true
                 local origRay = Workspace.Raycast
                 Workspace.Raycast = function(self, origin, direction, params)
                     if sheriff.silentEnabled and self == Workspace and direction and direction.Magnitude > 30 then
@@ -1835,7 +1834,7 @@ task.spawn(function()
                         found[v]=true
                         if not coinHighlights[v] then
                             local hl=Instance.new("Highlight")
-                            hl.Name="OxideMm2Coin"
+                            hl.Name="ArcMm2Coin"
                             hl.FillColor=esp.coinColor or Color3.fromRGB(255,221,0)
                             hl.FillTransparency=0.6
                             hl.OutlineColor=esp.coinColor or Color3.fromRGB(255,221,0)
@@ -1871,7 +1870,7 @@ task.spawn(function()
                                 found[p]=true
                                 if not gunHighlights[p] then
                                     local hl=Instance.new("Highlight")
-                                    hl.Name="OxideMm2Gun"
+                                    hl.Name="ArcMm2Gun"
                                     hl.FillColor=Color3.fromRGB(120,80,255)
                                     hl.FillTransparency=0.5
                                     hl.OutlineColor=Color3.fromRGB(120,80,255)
@@ -1905,7 +1904,7 @@ ServerSub:AddButton({
 ServerSub:AddSlider({
     Name = "Hop Player Max", Min = 5, Max = 28, Default = 12, Suffix = " players", Flag = "hop_playermax",
     Description = "Only hop to servers below this count",
-    Callback = function(v) _G.OxideHopMax = v end,
+    Callback = function(v) _G.ArcHopMax = v end,
 })
 ServerSub:AddButton({
     Name = "Hop To Low Player Server", Primary = true,
@@ -1922,7 +1921,7 @@ ServerSub:AddButton({
                 else error("no http") end
                 local data=HttpService:JSONDecode(raw)
                 local best=nil
-                local maxPlayers=_G.OxideHopMax or 12
+                local maxPlayers=_G.ArcHopMax or 12
                 for _,s in ipairs(data.data or {}) do
                     if type(s.playing)=="number" and s.playing < maxPlayers and s.playing < s.maxPlayers and s.id~=game.JobId then
                         if not best or s.playing < best.playing then best=s end
@@ -2207,11 +2206,11 @@ SettingsSub:AddButton({
     Name = "Unload Hub",
     Callback = function()
         HUB.Unload()
-        _G.OxideMm2 = nil
+        _G.ArcMm2 = nil
     end,
 })
 
 -- ══════════════════════════════════════════════════════════════════════════════
 -- BOOT
 -- ══════════════════════════════════════════════════════════════════════════════
-Notify("MM2", "Oxide HUB loaded — Coins: "..tostring(GetCoins()).." | Role: "..GetRole(), "Success", 3)
+Notify("MM2", "Arc HUB loaded — Coins: "..tostring(GetCoins()).." | Role: "..GetRole(), "Success", 3)
