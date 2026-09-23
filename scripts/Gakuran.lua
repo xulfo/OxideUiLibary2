@@ -1,21 +1,21 @@
 -- ═══ HUB STRIP POINT — when executed through the hub ScriptLoader, which injects
---     "local Library = _G.OxideLib" above this line instead. ═══
+--     "local Library = _G.ArcLib" above this line instead. ═══
 -- ══════════════════════════════════════════════════════════════════════════════
 
 do
 -- RE-EXECUTION GUARD
 do
-    local prev = _G.OxideGakuran
+    local prev = _G.ArcGakuran
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, dead = false, loops = {} }
-_G.OxideGakuran = HUB
+_G.ArcGakuran = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | Gakuran",
+    Name = "Arc HUB | Gakuran",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.2,
 })
 
@@ -48,7 +48,7 @@ local function safeCallback(fn)
     return function(...)
         local ok, err = pcall(fn, ...)
         if not ok then
-            pcall(Notify, "Oxide HUB", "Error: " .. tostring(err), "Error", 4)
+            pcall(Notify, "Arc HUB", "Error: " .. tostring(err), "Error", 4)
         end
     end
 end
@@ -887,8 +887,8 @@ local collisionOriginal = {}
 
 local function CleanupFly()
     if FLY.hrp and FLY.hrp.Parent then
-        local bv = FLY.hrp:FindFirstChild("OxideFlyBody")
-        local bg = FLY.hrp:FindFirstChild("OxideFlyGyro")
+        local bv = FLY.hrp:FindFirstChild("ArcFlyBody")
+        local bg = FLY.hrp:FindFirstChild("ArcFlyGyro")
         if bv then bv:Destroy() end
         if bg then bg:Destroy() end
     end
@@ -911,14 +911,14 @@ local function ApplyFly(on)
         FLY.oldPlatformStand = FLY.hum.PlatformStand
         FLY.hum.PlatformStand = true
     end
-    local bv = hrp:FindFirstChild("OxideFlyBody") or Instance.new("BodyVelocity")
-    bv.Name = "OxideFlyBody"
+    local bv = hrp:FindFirstChild("ArcFlyBody") or Instance.new("BodyVelocity")
+    bv.Name = "ArcFlyBody"
     bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
     bv.P = 1e4
     bv.Velocity = Vector3.zero
     bv.Parent = hrp
-    local bg = hrp:FindFirstChild("OxideFlyGyro") or Instance.new("BodyGyro")
-    bg.Name = "OxideFlyGyro"
+    local bg = hrp:FindFirstChild("ArcFlyGyro") or Instance.new("BodyGyro")
+    bg.Name = "ArcFlyGyro"
     bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
     bg.P = 1e4
     bg.CFrame = hrp.CFrame
@@ -932,8 +932,8 @@ local function FlyTick()
     end
     local hrp = GetMyHRP()
     if not hrp then return end
-    if FLY.hrp ~= hrp or not hrp:FindFirstChild("OxideFlyBody") then ApplyFly(true) end
-    local bv = hrp:FindFirstChild("OxideFlyBody")
+    if FLY.hrp ~= hrp or not hrp:FindFirstChild("ArcFlyBody") then ApplyFly(true) end
+    local bv = hrp:FindFirstChild("ArcFlyBody")
     local camera = Workspace.CurrentCamera
     if not (bv and camera) then return end
     local dir = Vector3.zero
@@ -1156,12 +1156,12 @@ local function GetEspGui()
     pcall(function() table.insert(oldParents, game:GetService("CoreGui")) end)
     pcall(function() table.insert(oldParents, LocalPlayer:FindFirstChildOfClass("PlayerGui")) end)
     for _, parent in ipairs(oldParents) do
-        local old = parent and parent:FindFirstChild("OxideESPGui")
+        local old = parent and parent:FindFirstChild("ArcESPGui")
         if old then pcall(function() old:Destroy() end) end
     end
 
     espGui = Instance.new("ScreenGui")
-    espGui.Name = "OxideESPGui"
+    espGui.Name = "ArcESPGui"
     espGui.ResetOnSpawn = false
     -- WorldToViewportPoint is used below, so IgnoreGuiInset keeps coordinates exact.
     espGui.IgnoreGuiInset = true
@@ -1184,7 +1184,7 @@ end
 
 local function MakeHolder()
     local holder = Instance.new("Frame")
-    holder.Name = "OxideESPEntry"
+    holder.Name = "ArcESPEntry"
     holder.Position = UDim2.fromOffset(0, 0)
     holder.Size = UDim2.fromScale(1, 1)
     holder.BackgroundTransparency = 1
@@ -1279,7 +1279,7 @@ end
 
 local function BuildEspEntry(p, chr)
     local holder = MakeHolder()
-    pcall(function() holder:SetAttribute("OxidePlayerUserId", p.UserId) end)
+    pcall(function() holder:SetAttribute("ArcPlayerUserId", p.UserId) end)
     local box, stroke = MakeBox(holder)
     local e = {
         model = chr,
@@ -1290,7 +1290,7 @@ local function BuildEspEntry(p, chr)
         dot = MakeDot(holder),
         nameLbl = MakeLabel(holder, espColor),
         hpLbl = MakeLabel(holder, Color3.fromRGB(130, 255, 130)),
-        distLbl = MakeLabel(holder, Color3.fromRGB(180, 190, 255)),
+        distLbl = MakeLabel(holder, Color3.fromRGB(200, 200, 200)),
         hl = nil,
     }
     e.hpBg, e.hpFill = MakeHpBar(holder)
@@ -1415,7 +1415,7 @@ local function UpdateEsp()
             if not e.hl or e.hl.Adornee ~= chr then
                 if e.hl then pcall(function() e.hl:Destroy() end) end
                 e.hl = Instance.new("Highlight")
-                e.hl.Name = "OxideESP"
+                e.hl.Name = "ArcESP"
                 e.hl.Adornee = chr
                 e.hl.Parent = chr
             end
@@ -2703,7 +2703,7 @@ SettingsSub:AddKeybind({
 SettingsSub:AddButton({
     Name = "Unload",
     Callback = safeCallback(function()
-        Notify("Oxide HUB", "Script unloaded", "Info")
+        Notify("Arc HUB", "Script unloaded", "Info")
         HUB.Unload()
     end),
 })
@@ -2784,8 +2784,8 @@ function HUB.Unload()
     for _, c in ipairs(HUB.conns) do pcall(function() c:Disconnect() end) end
     table.clear(HUB.conns)
     pcall(function() Window:Destroy() end)
-    _G.OxideGakuran = nil
+    _G.ArcGakuran = nil
 end
 
-print("[Oxide HUB] Gakuran loaded. ENV_OK:", ENV_OK)
+print("[Arc HUB] Gakuran loaded. ENV_OK:", ENV_OK)
 end
