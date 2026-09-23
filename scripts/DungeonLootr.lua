@@ -1,23 +1,23 @@
 -- === HUB STRIP POINT - when executed through the hub ScriptLoader, which injects
---     "local Library = _G.OxideLib" above this line instead. ===
+--     "local Library = _G.ArcLib" above this line instead. ===
 -- ==============================================================================
 
 -- ==============================================================================
 -- RE-EXECUTION GUARD + RESOURCE TRACKING
 -- ==============================================================================
 do
-    local prev = _G.OxideDungeonLootr
+    local prev = _G.ArcDungeonLootr
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false }
-_G.OxideDungeonLootr = HUB
+_G.ArcDungeonLootr = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | Dungeon-Lootr",
+    Name = "Arc HUB | Dungeon-Lootr",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.0,
 })
 
@@ -65,7 +65,7 @@ local function safeCallback(fn)
     return function(...)
         local ok, err = pcall(fn, ...)
         if not ok then
-            pcall(Notify, "Oxide HUB", "Error: " .. tostring(err), "Error", 4)
+            pcall(Notify, "Arc HUB", "Error: " .. tostring(err), "Error", 4)
         end
     end
 end
@@ -1346,7 +1346,7 @@ track(RunService.RenderStepped:Connect(function()
         if esp.chams then
             if not obj.highlight then
                 local hl = Instance.new("Highlight")
-                hl.Name = "OxideHighlight"; hl.FillTransparency = 0.5; hl.OutlineTransparency = 0
+                hl.Name = "ArcHighlight"; hl.FillTransparency = 0.5; hl.OutlineTransparency = 0
                 hl.Adornee = item.Model; hl.Parent = item.Model
                 obj.highlight = hl; table.insert(HUB.highlights, hl)
             end
@@ -2182,14 +2182,14 @@ ConfigSub:AddKeybind({
 ConfigSub:AddDivider()
 
 ConfigSub:AddButton({
-    Name = "Unload Oxide HUB",
+    Name = "Unload Arc HUB",
     Callback = safeCallback(function()
         pcall(function() HUB.Unload() end)
     end)
 })
 
 ConfigSub:AddParagraph({
-    Title = "Oxide HUB | Dungeon-Lootr",
+    Title = "Arc HUB | Dungeon-Lootr",
     Content = "Version 1.2.0 (Production)\nDeveloped for Dungeon-Lootr.\nIncludes full combat aura, automated AFK dungeon grinder, drops collector, instant-teleport room & boss chest looter, mid-run & end-run auto reward claims, ESP suite and movement exploits."
 })
 
@@ -2222,7 +2222,7 @@ HUB.Unload = function()
     end
 
     pcall(function() Window:Destroy() end)
-    _G.OxideDungeonLootr = nil
+    _G.ArcDungeonLootr = nil
 end
 
-Notify("Oxide HUB", "Dungeon-Lootr script loaded successfully!", "Success", 3.5)
+Notify("Arc HUB", "Dungeon-Lootr script loaded successfully!", "Success", 3.5)
