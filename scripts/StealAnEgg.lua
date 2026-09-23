@@ -1,23 +1,23 @@
 -- === HUB STRIP POINT - when executed through the hub ScriptLoader, which injects
---     "local Library = _G.OxideLib" above this line instead. ===
+--     "local Library = _G.ArcLib" above this line instead. ===
 -- ==============================================================================
 
 -- ==============================================================================
 -- RE-EXECUTION GUARD + RESOURCE TRACKING
 -- ==============================================================================
 do
-    local prev = _G.OxideStealAnEgg
+    local prev = _G.ArcStealAnEgg
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
 local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false }
-_G.OxideStealAnEgg = HUB
+_G.ArcStealAnEgg = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
 
 local Window = Library:CreateWindow({
-    Name = "Oxide HUB | Ein Ei stehlen",
+    Name = "Arc HUB | Ein Ei stehlen",
     LoadingAnimation = true,
-    LoadingText = "Oxide",
+    LoadingText = "Arc",
     LoadingDuration = 2.0,
 })
 
@@ -94,7 +94,7 @@ local function safeCallback(fn)
     return function(...)
         local ok, err = pcall(fn, ...)
         if not ok then
-            pcall(Notify, "Oxide HUB", "Error: " .. tostring(err), "Error", 4)
+            pcall(Notify, "Arc HUB", "Error: " .. tostring(err), "Error", 4)
         end
     end
 end
@@ -3221,14 +3221,14 @@ ConfigSub:AddKeybind({
 ConfigSub:AddDivider()
 
 ConfigSub:AddButton({
-    Name = "Unload Oxide HUB",
+    Name = "Unload Arc HUB",
     Callback = safeCallback(function()
         pcall(function() HUB.Unload() end)
     end)
 })
 
     ConfigSub:AddParagraph({
-        Title = "Oxide HUB | Ein Ei stehlen",
+        Title = "Arc HUB | Ein Ei stehlen",
         Content = "Version 4.2.2 (Production)\nEquipped with UGI / Client AC Neutralizer, BAC Telemetry Spoofer, Evidence Scrubber, Strict Rarity Filtering, clean open walkway travel without wall clipping, automatic return to trigger position, and auto egg placement in pen.\nAutomated egg stealing, hatching, homestead base upgrades, treadmill speed training, rewards collector, bat aura, ESP tracker."
     })
 end
@@ -3259,7 +3259,7 @@ HUB.Unload = function()
     end
 
     pcall(function() Window:Destroy() end)
-    _G.OxideStealAnEgg = nil
+    _G.ArcStealAnEgg = nil
 end
 
-Notify("Oxide HUB", "Ein Ei stehlen script loaded successfully!", "Success", 3.5)
+Notify("Arc HUB", "Ein Ei stehlen script loaded successfully!", "Success", 3.5)
