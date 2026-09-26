@@ -85,6 +85,7 @@ local GAME_MAP = {
     [83038462357724]   = "GrabenUndReinigen.lua",
     [94640181989498]   = "GrowAChickenFighter.lua",
     [107778070777162]  = "StealAnEgg.lua",
+    [124216119978534]  = "RideAPet.lua",
     [100068273119174]  = "LeafSimulator.lua",
     [2788229376]       = "DaHood.lua",
     [142823291]        = "Mm2.lua",
