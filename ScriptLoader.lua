@@ -97,6 +97,7 @@ local GAME_MAP = {
     [83038462357724]   = "GrabenUndReinigen.lua",   -- Graben und reinigen 🧼
     [94640181989498]   = "GrowAChickenFighter.lua", -- Grow a Chicken Fighter 🐔
     [107778070777162]  = "StealAnEgg.lua",          -- Ein Ei stehlen 🥚
+    [124216119978534]  = "RideAPet.lua",            -- Reite ein Haustier 🐣
     [100068273119174]  = "LeafSimulator.lua",       -- 🍂 Spiel (Leaf Simulator)
     [2788229376]       = "DaHood.lua",              -- Da Hood 🏙️
     [142823291]        = "Mm2.lua",                 -- MM2 🔪
