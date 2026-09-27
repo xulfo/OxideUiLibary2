@@ -29,6 +29,7 @@ local PROFILE_TWEEN = TweenInfo.new(0.32, Enum.EasingStyle.Quart, Enum.EasingDir
 --   getgenv().ArcLanguage = "de"  -- force a language before loading the lib
 -- ════════════════════════════════════════════════════════════════════════════
 local LANG_URL = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/UiLibary/lang/"
+local LANG_API = "https://api.github.com/repos/xulfo/OxideUiLibary2/contents/UiLibary/lang/"
 
 local Lang = {
     code     = "en",     -- language that is applied right now
@@ -117,6 +118,43 @@ local function langRev(code)
     return nil
 end
 
+-- Minimal base64 decoder (the contents API ships the file base64 encoded).
+local B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local B64_VALUES = {}
+for index = 1, #B64_CHARS do B64_VALUES[string.sub(B64_CHARS, index, index)] = index - 1 end
+
+local function base64Decode(data)
+    local out, buffer, bits = {}, 0, 0
+    for index = 1, #data do
+        local value = B64_VALUES[string.sub(data, index, index)]
+        if value then
+            buffer = buffer * 64 + value
+            bits = bits + 6
+            if bits >= 8 then
+                bits = bits - 8
+                local divisor = 2 ^ bits
+                out[#out + 1] = string.char(math.floor(buffer / divisor) % 256)
+                buffer = buffer % divisor
+            end
+        end
+    end
+    return table.concat(out)
+end
+
+-- Dict via the contents API: that is always the committed state, while the raw
+-- CDN host can keep serving a stale file for minutes (it ignores query strings).
+local function langApiLoad(code)
+    local body = langHttpGet(LANG_API .. code .. ".json")
+    if type(body) ~= "string" then return nil end
+    local encoded = string.match(body, '"content"%s*:%s*"([^"]+)"')
+    if not encoded then return nil end
+    local decoded = base64Decode(encoded)
+    if string.sub(decoded, 1, 1) ~= "{" then return nil end
+    local ok, data = pcall(function() return HttpService:JSONDecode(decoded) end)
+    if ok and type(data) == "table" then return data end
+    return nil
+end
+
 local function langLoad(code)
     local base = langBase(code)
     local cache = _G.ArcLanguageDictionaries
@@ -127,22 +165,26 @@ local function langLoad(code)
     for _, candidate in ipairs(tries) do
         local dict = cache[candidate]
         if dict == nil then
-            local url = LANG_URL .. candidate .. ".json"
-            local rev = langRev(candidate)
-            if rev then url = url .. "?r=" .. tostring(rev) end
-            local body = langHttpGet(url)
-            if body then
-                local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
-                if ok and type(data) == "table" then
-                    dict = {}
-                    for key, value in pairs(data) do
-                        if type(key) == "string" and type(value) == "string"
-                            and string.sub(key, 1, 1) ~= "_" then
-                            dict[key] = value
-                        end
-                    end
-                    cache[candidate] = dict
+            local data = langApiLoad(candidate)
+            if not data then
+                local url = LANG_URL .. candidate .. ".json"
+                local rev = langRev(candidate)          -- best effort CDN buster
+                if rev then url = url .. "?r=" .. tostring(rev) end
+                local body = langHttpGet(url)
+                if body then
+                    local ok, json = pcall(function() return HttpService:JSONDecode(body) end)
+                    if ok and type(json) == "table" then data = json end
                 end
+            end
+            if data then
+                dict = {}
+                for key, value in pairs(data) do
+                    if type(key) == "string" and type(value) == "string"
+                        and string.sub(key, 1, 1) ~= "_" then
+                        dict[key] = value
+                    end
+                end
+                cache[candidate] = dict
             end
         end
         if dict and next(dict) ~= nil then
