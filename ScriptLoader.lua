@@ -3,6 +3,11 @@
 -- Checks game.PlaceId → loads library ONCE → downloads & runs the right script.
 -- Fully open source: everything is plain Lua on GitHub, no encryption.
 --
+-- FIRST 15 SECONDS:
+--  * Every run opens with the Arc Discord invite screen (invite link + a copy
+--    button). The library is downloaded in the background while that screen is
+--    up, so the hub script starts the moment the countdown ends.
+--
 -- FAST + STALE-PROOF:
 --  * Downloads are cached for 5 minutes per session, so re-running the script
 --    is instant instead of re-downloading ~250 KB every time.
@@ -22,6 +27,10 @@ local CFG = {
     SCRIPTS_BASE = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/scripts/",
     -- Fallback script when PlaceId doesn't match any known game
     FALLBACK  = "Universal.lua",
+    -- Community invite shown on the startup screen (the copy button copies it).
+    DISCORD_INVITE = "https://discord.gg/bbYM8kcaZd",
+    -- How long the invite screen stays up before the hub script loads (seconds).
+    DISCORD_GATE_SECONDS = 15,
 }
 
 -- Pretty game names shown on the statistics page (fallback = script name).
@@ -301,6 +310,373 @@ local function LoadGameScript(lib, scriptName)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
+-- DISCORD GATE — the invite screen shown before anything is loaded
+-- Built with plain Instance.new calls on purpose: it runs BEFORE the library is
+-- downloaded, so it cannot use the hub's UI helpers. It can never block a run
+-- either — if the UI cannot be built, the gate is skipped and the hub starts.
+-- ══════════════════════════════════════════════════════════════════════════════
+local GATE_COLORS = {
+    CardBg   = Color3.fromRGB(24, 24, 24),
+    Border   = Color3.fromRGB(35, 35, 35),
+    Element  = Color3.fromRGB(31, 31, 31),
+    White    = Color3.fromRGB(255, 255, 255),
+    Gray     = Color3.fromRGB(154, 154, 154),
+    Dim      = Color3.fromRGB(139, 139, 139),
+    Accent   = Color3.fromRGB(240, 240, 240),
+    OnAccent = Color3.fromRGB(12, 12, 12),
+    Success  = Color3.fromRGB(105, 166, 124),
+    Error    = Color3.fromRGB(190, 99, 99),
+}
+local GATE_LOGO = "rbxassetid://131675609143159"   -- the same mark as the hub's brand card
+
+local function CopyToClipboard(text)
+    local fn = setclipboard or toclipboard or writeclipboard
+    if type(fn) ~= "function" and type(syn) == "table" and type(syn.write_clipboard) == "function" then
+        fn = syn.write_clipboard
+    end
+    if type(fn) ~= "function" then return false end
+    return (pcall(fn, text))
+end
+
+local function GateParent()
+    local target
+    pcall(function()
+        target = (gethui and gethui()) or game:GetService("CoreGui")
+    end)
+    if not target then
+        local ok, plr = pcall(function() return game:GetService("Players").LocalPlayer end)
+        if ok and plr then
+            local ok2, pg = pcall(function() return plr:WaitForChild("PlayerGui", 5) end)
+            if ok2 then target = pg end
+        end
+    end
+    return target
+end
+
+-- Blocks for `seconds`, then removes itself. `state` is the background library
+-- download; it only feeds the status line.
+local function ShowDiscordGate(seconds, invite, state)
+    seconds = tonumber(seconds) or 0
+    invite  = tostring(invite or "https://discord.gg/")
+    if seconds <= 0 then return end
+
+    -- Never stack gates when the loader is executed again mid-countdown.
+    local stale = _G.ArcDiscordGate
+    _G.ArcDiscordGate = nil
+    if stale then
+        pcall(function() stale:Destroy() end)
+    end
+
+    local built = pcall(function()
+        local TweenService = game:GetService("TweenService")
+        local Lighting     = game:GetService("Lighting")
+
+        local parent = GateParent()
+        if not parent then error("no gui parent") end
+
+        local function mk(class, props)
+            local inst = Instance.new(class)
+            for k, v in pairs(props) do
+                if k ~= "Parent" then
+                    inst[k] = v
+                end
+            end
+            inst.Parent = props.Parent
+            return inst
+        end
+
+        local cardClass = "Frame"
+        if pcall(function() return Instance.new("CanvasGroup") end) then
+            cardClass = "CanvasGroup"
+        end
+
+        local gui = mk("ScreenGui", {
+            Name = "ArcDiscordGate",
+            ResetOnSpawn = false,
+            IgnoreGuiInset = true,
+            ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+            DisplayOrder = 1000,
+            Parent = parent,
+        })
+        _G.ArcDiscordGate = gui
+
+        local blur = Instance.new("BlurEffect")
+        blur.Name = "ArcGateBlur"
+        blur.Size = 0
+        blur.Parent = Lighting
+
+        local backdrop = mk("Frame", {
+            Name = "Backdrop",
+            Size = UDim2.fromScale(1, 1),
+            BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+            BackgroundTransparency = 1,
+            ZIndex = 1,
+            Parent = gui,
+        })
+
+        local card = mk(cardClass, {
+            Name = "Card",
+            Size = UDim2.fromOffset(404, 292),
+            Position = UDim2.new(0.5, 0, 0.5, 20),
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            BackgroundColor3 = GATE_COLORS.CardBg,
+            BackgroundTransparency = 0,
+            ZIndex = 2,
+            Parent = gui,
+        })
+        if card:IsA("CanvasGroup") then
+            card.GroupTransparency = 0
+        end
+        mk("UICorner", { CornerRadius = UDim.new(0, 14), Parent = card })
+        mk("UIStroke", {
+            Color = GATE_COLORS.Border,
+            Thickness = 1,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Parent = card,
+        })
+
+        -- Brand row
+        local logoHolder = mk("Frame", {
+            Position = UDim2.fromOffset(18, 18),
+            Size = UDim2.fromOffset(44, 44),
+            BackgroundTransparency = 1,
+            ClipsDescendants = true,
+            ZIndex = 3,
+            Parent = card,
+        })
+        mk("ImageLabel", {
+            Image = GATE_LOGO,
+            BackgroundTransparency = 1,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromScale(1.12, 1.12),
+            ScaleType = Enum.ScaleType.Fit,
+            ZIndex = 3,
+            Parent = logoHolder,
+        })
+        mk("TextLabel", {
+            Text = "ARC HUB",
+            Font = Enum.Font.GothamBold,
+            TextSize = 15,
+            TextColor3 = GATE_COLORS.White,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(74, 22),
+            Size = UDim2.new(1, -92, 0, 16),
+            ZIndex = 3,
+            Parent = card,
+        })
+        mk("TextLabel", {
+            Text = "Community · Support · Updates",
+            Font = Enum.Font.Gotham,
+            TextSize = 10,
+            TextColor3 = GATE_COLORS.Dim,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(74, 40),
+            Size = UDim2.new(1, -92, 0, 14),
+            ZIndex = 3,
+            Parent = card,
+        })
+        mk("Frame", {
+            Position = UDim2.fromOffset(18, 76),
+            Size = UDim2.new(1, -36, 0, 1),
+            BackgroundColor3 = GATE_COLORS.Border,
+            ZIndex = 3,
+            Parent = card,
+        })
+
+        -- Invite copy area
+        mk("TextLabel", {
+            Text = "Join our Discord",
+            Font = Enum.Font.GothamBold,
+            TextSize = 14,
+            TextColor3 = GATE_COLORS.White,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(18, 90),
+            Size = UDim2.new(1, -36, 0, 16),
+            ZIndex = 3,
+            Parent = card,
+        })
+        mk("TextLabel", {
+            Text = "Copy the invite below and open it in your browser to get support, updates and new scripts.",
+            Font = Enum.Font.Gotham,
+            TextSize = 11,
+            TextColor3 = GATE_COLORS.Dim,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top,
+            TextWrapped = true,
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(18, 110),
+            Size = UDim2.new(1, -36, 0, 30),
+            ZIndex = 3,
+            Parent = card,
+        })
+
+        local inviteBox = mk("Frame", {
+            Position = UDim2.fromOffset(18, 148),
+            Size = UDim2.new(1, -36, 0, 38),
+            BackgroundColor3 = GATE_COLORS.Element,
+            ZIndex = 3,
+            Parent = card,
+        })
+        mk("UICorner", { CornerRadius = UDim.new(0, 8), Parent = inviteBox })
+        mk("UIStroke", {
+            Color = GATE_COLORS.Border,
+            Thickness = 1,
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Parent = inviteBox,
+        })
+        mk("TextLabel", {
+            Text = invite,
+            Font = Enum.Font.GothamMedium,
+            TextSize = 13,
+            TextColor3 = GATE_COLORS.Gray,
+            TextXAlignment = Enum.TextXAlignment.Center,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            BackgroundTransparency = 1,
+            Size = UDim2.fromScale(1, 1),
+            ZIndex = 4,
+            Parent = inviteBox,
+        })
+
+        local copyBtn = mk("TextButton", {
+            Text = "Copy Discord Invite",
+            Font = Enum.Font.GothamBold,
+            TextSize = 13,
+            TextColor3 = GATE_COLORS.OnAccent,
+            BackgroundColor3 = GATE_COLORS.Accent,
+            AutoButtonColor = false,
+            Position = UDim2.fromOffset(18, 196),
+            Size = UDim2.new(1, -36, 0, 38),
+            ZIndex = 3,
+            Parent = card,
+        })
+        mk("UICorner", { CornerRadius = UDim.new(0, 8), Parent = copyBtn })
+
+        -- Countdown
+        local statusLbl = mk("TextLabel", {
+            Text = "The hub loads in " .. tostring(math.floor(seconds)) .. "s",
+            Font = Enum.Font.Gotham,
+            TextSize = 11,
+            TextColor3 = GATE_COLORS.Dim,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(18, 244),
+            Size = UDim2.new(1, -36, 0, 14),
+            ZIndex = 3,
+            Parent = card,
+        })
+        local barTrack = mk("Frame", {
+            Position = UDim2.fromOffset(18, 266),
+            Size = UDim2.new(1, -36, 0, 4),
+            BackgroundColor3 = GATE_COLORS.Element,
+            ZIndex = 3,
+            Parent = card,
+        })
+        mk("UICorner", { CornerRadius = UDim.new(0, 2), Parent = barTrack })
+        local barFill = mk("Frame", {
+            Size = UDim2.new(0, 0, 1, 0),
+            BackgroundColor3 = GATE_COLORS.Accent,
+            ZIndex = 4,
+            Parent = barTrack,
+        })
+        mk("UICorner", { CornerRadius = UDim.new(0, 2), Parent = barFill })
+
+        local copied = false
+        copyBtn.MouseEnter:Connect(function()
+            if not copied then
+                TweenService:Create(copyBtn, TweenInfo.new(0.15), { BackgroundTransparency = 0.12 }):Play()
+            end
+        end)
+        copyBtn.MouseLeave:Connect(function()
+            if not copied then
+                TweenService:Create(copyBtn, TweenInfo.new(0.15), { BackgroundTransparency = 0 }):Play()
+            end
+        end)
+        copyBtn.MouseButton1Click:Connect(function()
+            if CopyToClipboard(invite) then
+                copied = true
+                copyBtn.Text = "Invite copied to your clipboard"
+                copyBtn.BackgroundColor3 = GATE_COLORS.Success
+                copyBtn.TextColor3 = GATE_COLORS.White
+                copyBtn.BackgroundTransparency = 0
+            else
+                copyBtn.Text = "Clipboard blocked - copy: " .. invite
+                copyBtn.TextSize = 11
+                copyBtn.BackgroundColor3 = GATE_COLORS.Error
+                copyBtn.TextColor3 = GATE_COLORS.White
+            end
+        end)
+
+        TweenService:Create(backdrop, TweenInfo.new(0.25), { BackgroundTransparency = 0.45 }):Play()
+        TweenService:Create(blur, TweenInfo.new(0.25), { Size = 16 }):Play()
+        TweenService:Create(card, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            Position = UDim2.fromScale(0.5, 0.5),
+        }):Play()
+
+        local startedAt = os.clock()
+        while true do
+            local elapsed = os.clock() - startedAt
+            if elapsed >= seconds then break end
+            barFill.Size = UDim2.new(math.clamp(elapsed / seconds, 0, 1), 0, 1, 0)
+            local ready = (state and state.done) and " - hub ready" or ""
+            statusLbl.Text = string.format("The hub loads in %.1fs%s", math.max(seconds - elapsed, 0), ready)
+            task.wait()
+        end
+        barFill.Size = UDim2.new(1, 0, 1, 0)
+        if state and not state.done then
+            statusLbl.Text = "Finishing the download..."
+        else
+            statusLbl.Text = "Starting the hub..."
+        end
+
+        local fade = TweenInfo.new(0.3, Enum.EasingStyle.Quad)
+        TweenService:Create(backdrop, fade, { BackgroundTransparency = 1 }):Play()
+        TweenService:Create(blur, fade, { Size = 0 }):Play()
+        if card:IsA("CanvasGroup") then
+            TweenService:Create(card, fade, { GroupTransparency = 1 }):Play()
+            task.wait(0.3)
+        end
+        if _G.ArcDiscordGate == gui then
+            _G.ArcDiscordGate = nil
+        end
+        pcall(function() gui:Destroy() end)
+        pcall(function() blur:Destroy() end)
+    end)
+
+    if not built then
+        -- The screen could not be built: clean up and never block the load.
+        pcall(function()
+            local gui = _G.ArcDiscordGate
+            _G.ArcDiscordGate = nil
+            if gui then gui:Destroy() end
+            local Lighting = game:GetService("Lighting")
+            for _, child in ipairs(Lighting:GetChildren()) do
+                if child.Name == "ArcGateBlur" then child:Destroy() end
+            end
+        end)
+    end
+end
+
+-- Waits for the library download that was started before the gate.
+local function CollectLibrary(state)
+    local waited = 0
+    while not state.done and waited < 30 do
+        task.wait(0.1)
+        waited = waited + 0.1
+    end
+    if not state.done then
+        return LoadLibrary()
+    end
+    if not state.ok then
+        error(state.value, 0)
+    end
+    return state.value
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
 -- MAIN
 -- ══════════════════════════════════════════════════════════════════════════════
 local placeId = game.PlaceId
@@ -309,8 +685,18 @@ local scriptName = ResolveScript(placeId, gameId)
 
 print("[Loader] PlaceId:", placeId, " GameId:", gameId, "→", scriptName)
 
+-- Download the library in the background so the invite screen doubles as the
+-- loading time — the hub is ready the second the countdown ends.
+local libState = { done = false, ok = false, value = nil }
+pcall(task.spawn, function()
+    local ok, res = pcall(LoadLibrary)
+    libState.ok, libState.value, libState.done = ok, res, true
+end)
+
+ShowDiscordGate(CFG.DISCORD_GATE_SECONDS, CFG.DISCORD_INVITE, libState)
+
 local t0 = os.clock()
-local Library = LoadLibrary()
+local Library = CollectLibrary(libState)
 
 -- Expose globally (stripped scripts grab it via local Library = _G.ArcLib)
 _G.ArcLib = Library
