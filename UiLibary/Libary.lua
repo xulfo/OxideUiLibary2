@@ -1117,7 +1117,7 @@ end
 -- LIBRARY
 -- ════════════════════════════════════════════════════════════════════════════
 local Library = {
-    Version       = "2.7",      -- 2.7: Library.Compat bridge (third-party hub scripts) + slider Increment/Format
+    Version       = "2.8",      -- 2.8: Compat canvas/widget Root()+Page (ported-script panel API)
     ChatFree      = true,      -- marker: this build has no hub chat (used by the loader to reject stale CDN copies)
     Themes        = THEMES,
     Icons         = ICONS,
@@ -4519,6 +4519,8 @@ local function buildCompatLayer()
         handle.Destroy = function(self)
             if instance and instance.Parent then instance:Destroy() end
         end
+        -- Ported scripts ask widgets for their root Instance (old API name).
+        handle.Root = function(self) return instance end
         return handle
     end
 
@@ -4548,7 +4550,7 @@ local function buildCompatLayer()
         autoOrder(holder)
         corner(holder, 8)
 
-        local canvas = { _frame = holder, _unit = unit, _font = font, _lines = lines, _maxLines = maxLines }
+        local canvas = { _frame = holder, _unit = unit, _font = font, _lines = lines, _maxLines = maxLines, Instance = holder }
         local resolvedChildren = {}
 
         local function resolveParent(p)
@@ -4684,6 +4686,7 @@ local function buildCompatLayer()
         function canvas:Height() return holder.AbsoluteSize.Y end
         function canvas:Lines() return canvas._lines end
         function canvas:FrameInstance() return holder end
+        function canvas:Root() return holder end
         function canvas:SetContentLines(n)
             n = math.max(1, tonumber(n) or canvas._lines)
             if math.abs(n - canvas._lines) < 0.01 then return end
@@ -4909,6 +4912,10 @@ local function buildCompatLayer()
             if win._byName[name] then return win._byName[name] end
             local arcTab = arc:AddTab(name)
             local tab = { Name = name, ArcTab = arcTab, _sections = {}, _byName = {} }
+            -- Ported scripts read <tab>.Page to test whether the tab is on screen
+            -- (visibility walks up to the ScreenGui) and <tab>.Root for the frame.
+            tab.Page = arcTab and (arcTab._page or arcTab._pagesHolder) or nil
+            tab.Root = function(self) return self.Page end
             function tab:CreateSection(so)
                 so = so or {}
                 local sname = tostring(so.Name or ("Section " .. tostring(#tab._sections + 1)))
