@@ -15,6 +15,231 @@ local NOTIFICATION_TWEEN = TweenInfo.new(0.18, Enum.EasingStyle.Quart, Enum.Easi
 local PROFILE_TWEEN = TweenInfo.new(0.32, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- LANGUAGE (auto-detected UI translation)
+-- Everything this library renders - labels, buttons, dropdown entries, section
+-- titles, placeholders and notifications - is written in English; that is the
+-- source language. On load the library asks Roblox which language the player
+-- uses and downloads the matching dictionary from the hub
+-- (UiLibary/lang/<code>.json = flat { "english text" = "translated text" }).
+-- Every string is then translated while the UI is built, so scripts never deal
+-- with translations themselves. An unreachable dictionary simply leaves the UI
+-- in English, and nothing here can break a window that is already running.
+--   Library:SetLanguage("de")     -- apply a language right now
+--   Library:SetLanguage(nil)      -- back to auto detection
+--   getgenv().ArcLanguage = "de"  -- force a language before loading the lib
+-- ════════════════════════════════════════════════════════════════════════════
+local LANG_URL = "https://raw.githubusercontent.com/xulfo/OxideUiLibary2/main/UiLibary/lang/"
+
+local Lang = {
+    code     = "en",     -- language that is applied right now
+    detected = "en",     -- locale the client reported
+    auto     = true,     -- true while the language follows the detection
+    dict     = {},       -- [english source] = translated text
+    phrases  = {},       -- multi word entries used inside longer text
+    extra    = {},       -- runtime additions (Library:AddTranslations)
+    status   = "default",
+    registry = setmetatable({}, { __mode = "k" }),   -- [instance] = { prop, src }
+    -- Keep in sync with the files in UiLibary/lang/ (a code without a
+    -- dictionary just falls back to English).
+    list     = {
+        { code = "en",    name = "English" },
+        { code = "de",    name = "Deutsch" },
+        { code = "es",    name = "Español" },
+        { code = "fr",    name = "Français" },
+        { code = "pt-br", name = "Português (BR)" },
+    },
+}
+
+-- "de-AT" -> "de", "pt_BR" -> "pt-br"
+local function langBase(tag)
+    local value = string.lower(tostring(tag or "")):gsub("_", "-")
+    if value == "" then return nil end
+    return string.match(value, "^([%a]+)"), value
+end
+
+-- Roblox client language first, then the OS locale. The first non-English
+-- candidate wins, so a German Windows with an English Roblox default still
+-- ends up German.
+local function langDetect()
+    local override
+    pcall(function() override = getgenv and getgenv().ArcLanguage end)
+    if type(override) ~= "string" then override = _G.ArcLanguage end
+    local robloxLocale, systemLocale
+    pcall(function()
+        local service = game:GetService("LocalizationService")
+        robloxLocale, systemLocale = service.RobloxLocaleId, service.SystemLocaleId
+    end)
+    local candidates
+    if type(override) == "string" and override ~= "" then
+        candidates = { override }
+    else
+        candidates = { robloxLocale, systemLocale }
+    end
+    local first
+    for _, tag in ipairs(candidates) do
+        if type(tag) == "string" and tag ~= "" then
+            first = first or tag
+            local base = langBase(tag)
+            if base and base ~= "en" then return tag end
+        end
+    end
+    return first or "en"
+end
+
+local function langHttpGet(url)
+    local ok, body = pcall(function() return game:HttpGet(url, true) end)
+    if not ok or type(body) ~= "string" then
+        ok, body = pcall(function() return game:HttpGet(url) end)
+    end
+    if ok and type(body) == "string" and string.sub(body, 1, 1) == "{" then return body end
+    local env = (getgenv and getgenv()) or _G
+    for _, name in ipairs({ "request", "http_request", "syn_request" }) do
+        local fn = env[name]
+        if type(fn) == "function" then
+            local got, res = pcall(fn, { Url = url, Method = "GET" })
+            if got then
+                local text = type(res) == "table" and (res.Body or res.body) or res
+                if type(text) == "string" and string.sub(text, 1, 1) == "{" then return text end
+            end
+        end
+    end
+    return nil
+end
+
+local function langLoad(code)
+    local base = langBase(code)
+    local cache = _G.ArcLanguageDictionaries
+    if type(cache) ~= "table" then cache = {}; _G.ArcLanguageDictionaries = cache end
+    local tries = {}
+    if base and base ~= code then tries[#tries + 1] = base end
+    tries[#tries + 1] = code
+    for _, candidate in ipairs(tries) do
+        local dict = cache[candidate]
+        if dict == nil then
+            local body = langHttpGet(LANG_URL .. candidate .. ".json")
+            if body then
+                local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
+                if ok and type(data) == "table" then
+                    dict = {}
+                    for key, value in pairs(data) do
+                        if type(key) == "string" and type(value) == "string"
+                            and string.sub(key, 1, 1) ~= "_" then
+                            dict[key] = value
+                        end
+                    end
+                    cache[candidate] = dict
+                end
+            end
+        end
+        if dict and next(dict) ~= nil then
+            cache[code] = dict
+            return dict, candidate
+        end
+    end
+    return nil, nil
+end
+
+local function langPrepare(dict)
+    local merged = {}
+    for key, value in pairs(Lang.extra) do merged[key] = value end
+    for key, value in pairs(dict or {}) do merged[key] = value end
+    Lang.dict = merged
+    local phrases = {}
+    for key, value in pairs(merged) do
+        if value ~= key and #key >= 6 and string.find(key, " ", 1, true) then
+            phrases[#phrases + 1] = { key, value }
+        end
+    end
+    table.sort(phrases, function(a, b) return #a[1] > #b[1] end)
+    Lang.phrases = phrases
+end
+
+-- English in, translated text out. Exact match first, then whole-word phrase
+-- replacement so composed strings ("Picked up " .. name) are covered as well.
+local function translate(input)
+    if type(input) ~= "string" or input == "" or Lang.code == "en" then return input end
+    local exact = Lang.dict[input]
+    if exact then return exact end
+    if not string.find(input, " ", 1, true) then return input end
+    local out = input
+    for _, entry in ipairs(Lang.phrases) do
+        local key, value = entry[1], entry[2]
+        local from = 1
+        while #out < 2000 do
+            local a, b = string.find(out, key, from, true)
+            if not a then break end
+            local before = a > 1 and string.sub(out, a - 1, a - 1) or ""
+            local after = b < #out and string.sub(out, b + 1, b + 1) or ""
+            if (before == "" or not string.match(before, "[%w]"))
+                and (after == "" or not string.match(after, "[%w]")) then
+                out = string.sub(out, 1, a - 1) .. value .. string.sub(out, b + 1)
+                from = a + #value
+            else
+                from = a + 1
+            end
+        end
+    end
+    return out
+end
+
+-- Hand every GUI text through here: it keeps the English source so a language
+-- switch can rewrite the whole window without rebuilding it.
+local function setText(inst, prop, source)
+    if not inst or type(source) ~= "string" or source == "" then return source end
+    local rec = Lang.registry[inst]
+    if not rec then rec = {}; Lang.registry[inst] = rec end
+    local known = false
+    for _, item in ipairs(rec) do
+        if item.prop == prop then item.src = source; known = true; break end
+    end
+    if not known then rec[#rec + 1] = { prop = prop, src = source } end
+    inst[prop] = translate(source)
+    return inst[prop]
+end
+
+local function langRetranslate()
+    local count = 0
+    for inst, rec in pairs(Lang.registry) do
+        if inst and inst.Parent ~= nil then
+            for _, item in ipairs(rec) do
+                pcall(function() inst[item.prop] = translate(item.src) end)
+            end
+            count = count + 1
+        elseif inst then
+            Lang.registry[inst] = nil
+        end
+    end
+    return count
+end
+
+local function langSet(code)
+    if code == nil or code == "" or code == "auto" then
+        Lang.auto = true
+        Lang.detected = langDetect()
+        code = Lang.detected
+    else
+        Lang.auto = false
+    end
+    local base = langBase(code) or "en"
+    if base == "en" then
+        Lang.code, Lang.status = "en", "english"
+        langPrepare(nil)
+    else
+        local dict, source = langLoad(code)
+        if dict then
+            Lang.code = tostring(source or base)
+            Lang.status = "remote:" .. Lang.code
+            langPrepare(dict)
+        else
+            Lang.code, Lang.status = "en", "unavailable:" .. tostring(code)
+            langPrepare(nil)
+        end
+    end
+    langRetranslate()
+    return Lang.code
+end
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- BUILT-IN ICON LIBRARY
 -- ════════════════════════════════════════════════════════════════════════════
 local ICONS = {
@@ -239,6 +464,19 @@ end
 
 local function make(className, props)
     local inst = Instance.new(className)
+    -- Translation hook: every Text / PlaceholderText a caller passes is treated
+    -- as an English source string and translated while the element is built.
+    -- The caller's table stays untouched (dropdown entries must keep their
+    -- real value - only the displayed label is translated).
+    if props and (type(props.Text) == "string" or type(props.PlaceholderText) == "string") then
+        local copy = {}
+        for key, value in pairs(props) do copy[key] = value end
+        local textProp, placeProp = copy.Text, copy.PlaceholderText
+        copy.Text, copy.PlaceholderText = nil, nil
+        props = copy
+        if type(textProp) == "string" then props.Text = setText(inst, "Text", textProp) end
+        if type(placeProp) == "string" then props.PlaceholderText = setText(inst, "PlaceholderText", placeProp) end
+    end
     if inst:IsA("GuiObject") then
         inst.BorderSizePixel = 0
         inst.BackgroundColor3 = C.WindowBg
@@ -1117,7 +1355,7 @@ end
 -- LIBRARY
 -- ════════════════════════════════════════════════════════════════════════════
 local Library = {
-    Version       = "2.6",
+    Version       = "2.7",
     ChatFree      = true,      -- marker: this build has no hub chat (used by the loader to reject stale CDN copies)
     Themes        = THEMES,
     Icons         = ICONS,
@@ -1179,6 +1417,41 @@ function Library:Set(flag, value)
     end
     Library:SetState(f, value)
     return true
+end
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- LANGUAGE API
+-- ════════════════════════════════════════════════════════════════════════════
+Library.Language  = Lang           -- live view: code / detected / status / dict
+Library.Languages = Lang.list      -- selectable languages (code + native name)
+
+-- Translate a single string (mostly useful for text you render yourself).
+function Library:Translate(value) return translate(value) end
+Library.T = function(value) return translate(value) end
+
+-- Returns: active code, detected locale, auto flag
+function Library:GetLanguage() return Lang.code, Lang.detected, Lang.auto end
+
+-- code = "de" / "pt-br" ... forces that language, nil = auto detection again.
+function Library:SetLanguage(code) return langSet(code) end
+
+-- Re-apply the current language (re-detect while in auto mode).
+function Library:ReloadLanguage()
+    return langSet(Lang.auto and nil or Lang.code)
+end
+
+-- Merge extra entries into the active dictionary and refresh the open window.
+function Library:AddTranslations(entries)
+    if type(entries) ~= "table" then return 0 end
+    local added = 0
+    for key, value in pairs(entries) do
+        if type(key) == "string" and type(value) == "string" then
+            Lang.extra[key] = value; added = added + 1
+        end
+    end
+    langPrepare(Lang.dict)
+    langRetranslate()
+    return added
 end
 
 -- Track a connection against a window so Window:Destroy() can clean it up.
@@ -1637,7 +1910,7 @@ local function buildMusicPlayer(cfg)
             npTitle.Text = t.name
             npSub.Text = isPlaying and "Now playing" or "Paused"
         else
-            npTitle.Text = "Nothing playing"
+            setText(npTitle,"Text","Nothing playing")
             npSub.Text = (#tracks > 0) and "Select a track" or ("Add audio to the " .. MUSIC_FOLDER .. " folder")
         end
         playImg.Visible = not isPlaying
@@ -2637,7 +2910,7 @@ function Library:CreateWindow(opts)
         return vl
     end
     addProfileDetail(1,"USER ID",   localPlayer and tostring(localPlayer.UserId) or "N/A")
-    addProfileDetail(2,"ACCOUNT AGE",localPlayer and (tostring(localPlayer.AccountAge).." days") or "N/A")
+    addProfileDetail(2,"ACCOUNT AGE",localPlayer and (tostring(localPlayer.AccountAge).." "..translate("days")) or "N/A")
     local pingLabel=addProfileDetail(3,"PING","-- ms")
 
     local performanceWidth     = math.max(236,tonumber(opts.PerformanceWidth) or 266)
@@ -3004,7 +3277,7 @@ function Library:CreateWindow(opts)
                     task.spawn(function()
                         local ok, err = Library:JoinPlayer(info.placeId, info.jobId)
                         if not ok then
-                            joinBtn.Text = "JOIN"
+                            setText(joinBtn,"Text","JOIN")
                             joinBtn:SetAttribute("Busy", nil)
                             if windowRef and windowRef.Notify then
                                 windowRef:Notify({
@@ -3050,7 +3323,7 @@ function Library:CreateWindow(opts)
                             if row and row.Parent then row:Destroy() end
                             adminRows[userId] = nil
                         else
-                            dcBtn.Text = "DISCONNECT"
+                            setText(dcBtn,"Text","DISCONNECT")
                             dcBtn:SetAttribute("Busy", nil)
                             if windowRef and windowRef.Notify then
                                 windowRef:Notify({
@@ -3819,7 +4092,7 @@ function SubTab:AddSection(opts)
     if type(opts)=="string" then opts={Name=opts} end; opts=opts or {}
     local row=make("Frame",{Size=UDim2.new(1,0,0,22),BackgroundTransparency=1,Parent=self._card}); autoOrder(row)
     local tick=make("Frame",{AnchorPoint=Vector2.new(0,1),Position=UDim2.new(0,0,1,-4),Size=UDim2.fromOffset(3,11),BackgroundColor3=C.Accent,Parent=row}); corner(tick,2)
-    make("TextLabel",{Text=string.upper(tostring(opts.Name or "Section")),Font=Enum.Font.GothamBold,TextSize=10,TextColor3=C.TextGray,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Bottom,BackgroundTransparency=1,Position=UDim2.fromOffset(9,0),Size=UDim2.new(1,-9,1,-3),Parent=row})
+    make("TextLabel",{Text=string.upper(translate(tostring(opts.Name or "Section"))),Font=Enum.Font.GothamBold,TextSize=10,TextColor3=C.TextGray,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Bottom,BackgroundTransparency=1,Position=UDim2.fromOffset(9,0),Size=UDim2.new(1,-9,1,-3),Parent=row})
     make("Frame",{Position=UDim2.new(0,0,1,-1),Size=UDim2.new(1,0,0,1),BackgroundColor3=C.Border,Parent=row})
     local accentUnderline=make("Frame",{Position=UDim2.new(0,0,1,-1),Size=UDim2.fromOffset(28,1),BackgroundColor3=C.Accent,Parent=row})
     return row
@@ -3835,7 +4108,7 @@ function SubTab:AddLabel(opts)
     if type(opts)=="string" then opts={Text=opts} end; opts=opts or {}
     local lbl=make("TextLabel",{Text=tostring(opts.Text or "Label"),Font=Enum.Font.GothamMedium,TextSize=13,TextColor3=C.White,TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1,Size=UDim2.new(1,0,0,16),Parent=self._card})
     autoOrder(lbl)
-    return {Set=function(_,t) lbl.Text=tostring(t) end, Get=function() return lbl.Text end, Instance=lbl}
+    return {Set=function(_,t) setText(lbl,"Text",tostring(t)) end, Get=function() return lbl.Text end, Instance=lbl}
 end
 
 function SubTab:AddParagraph(opts)
@@ -3846,7 +4119,7 @@ function SubTab:AddParagraph(opts)
         make("TextLabel",{Text=tostring(opts.Title),Font=Enum.Font.GothamMedium,TextSize=13,TextColor3=C.White,TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1,Size=UDim2.new(1,0,0,16),LayoutOrder=1,Parent=card})
     end
     local body=make("TextLabel",{Text=tostring(opts.Text or opts.Content or ""),Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.TextDim,TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,TextWrapped=true,AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1,Size=UDim2.new(1,0,0,0),LayoutOrder=2,Parent=card})
-    return {Set=function(_,t) body.Text=tostring(t) end, Get=function() return body.Text end, Instance=body}
+    return {Set=function(_,t) setText(body,"Text",tostring(t)) end, Get=function() return body.Text end, Instance=body}
 end
 
 function SubTab:AddKeybind(opts)
@@ -3854,19 +4127,19 @@ function SubTab:AddKeybind(opts)
     local key=opts.Default
     if typeof(key)~="EnumItem" then key=nil end
     local row=newRow(self._card,30); rowLabels(row,opts.Name or "Keybind",opts.Description,80)
-    local btn=make("TextButton",{Text=key and key.Name or "None",Font=Enum.Font.GothamMedium,TextSize=11,TextColor3=C.TextGray,Size=UDim2.fromOffset(70,22),AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,0,0.5,0),BackgroundColor3=C.Element,Parent=row})
+    local btn=make("TextButton",{Text=key and key.Name or translate("None"),Font=Enum.Font.GothamMedium,TextSize=11,TextColor3=C.TextGray,Size=UDim2.fromOffset(70,22),AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,0,0.5,0),BackgroundColor3=C.Element,Parent=row})
     corner(btn,6)
     local listening=false; local conn
     local function setKey(k)
         if k~=nil and typeof(k)~="EnumItem" then return end
-        key=k; btn.Text=key and key.Name or "None"
+        key=k; btn.Text=key and key.Name or translate("None")
         if opts.OnKeyChanged then fire(opts.OnKeyChanged,key) end
         Library:QueueAutoSave()
     end
     local function stopListening()
         listening=false
         if conn then conn:Disconnect(); conn=nil end
-        btn.Text=key and key.Name or "None"
+        btn.Text=key and key.Name or translate("None")
         tween(btn,{BackgroundColor3=C.Element,TextColor3=C.TextGray})
     end
     btn.MouseEnter:Connect(function() if not listening then tween(btn,{BackgroundColor3=C.ElementHover}) end end)
@@ -3951,7 +4224,7 @@ function SubTab:AddDropdown(opts)
                 autoOrder(ob2);corner(ob2,4);make("UIPadding",{PaddingLeft=UDim.new(0,8),Parent=ob2}); ob2.TextXAlignment=Enum.TextXAlignment.Left
                 ob2.MouseEnter:Connect(function() tween(ob2,{BackgroundColor3=C.ElementHover,TextColor3=C.White}) end)
                 ob2.MouseLeave:Connect(function() tween(ob2,{BackgroundColor3=C.Element,TextColor3=C.TextGray}) end)
-                ob2.MouseButton1Click:Connect(function() value=o; vl.Text=os; closeDD(); fire(opts.Callback,o); Library:QueueAutoSave() end)
+                ob2.MouseButton1Click:Connect(function() value=o; setText(vl,"Text",os); closeDD(); fire(opts.Callback,o); Library:QueueAutoSave() end)
                 table.insert(ob,ob2)
             end
         end
@@ -3980,11 +4253,11 @@ function SubTab:AddDropdown(opts)
     btn.MouseEnter:Connect(function() tween(btn,{BackgroundColor3=C.ElementHover}) end)
     btn.MouseLeave:Connect(function() tween(btn,{BackgroundColor3=C.Element}) end)
     return registerFlag(opts.Flag, "dropdown", {
-        Set=function(_,o) value=o; vl.Text=tostring(o); fire(opts.Callback,o); Library:QueueAutoSave() end, Get=function() return value end,
+        Set=function(_,o) value=o; setText(vl,"Text",tostring(o)); fire(opts.Callback,o); Library:QueueAutoSave() end, Get=function() return value end,
         SetOptions=function(_,no)
             co=no or {}; local se=false
             for _,o in ipairs(co) do if o==value then se=true; break end end
-            if not se and co[1] then value=co[1]; vl.Text=tostring(value) end
+            if not se and co[1] then value=co[1]; setText(vl,"Text",tostring(value)) end
             rebuild(); if open then tween(list,{Size=UDim2.new(0,LW,0,calcH())}) end
         end,
         Refresh=function() rebuild() end,
@@ -4022,9 +4295,9 @@ function SubTab:AddMultiDropdown(opts)
     end
     local function updateSummary()
         local sel=selectedList()
-        if #sel==0 then vl.Text="None"
-        elseif #sel==1 then vl.Text=tostring(sel[1])
-        else vl.Text=#sel.." selected" end
+        if #sel==0 then setText(vl,"Text","None")
+        elseif #sel==1 then setText(vl,"Text",tostring(sel[1]))
+        else setText(vl,"Text",tostring(#sel).." "..translate("selected")) end
     end
     local function repo()
         local inset=GuiService:GetGuiInset(); local p,s=btn.AbsolutePosition,btn.AbsoluteSize
@@ -4314,5 +4587,12 @@ function SubTab:AddComponents(list)
     end
     return handles
 end
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- Detect the player's language once, before the first window exists, so every
+-- element is built in the right language straight away. Failures stay silent
+-- (the UI then simply stays English).
+-- ════════════════════════════════════════════════════════════════════════════
+pcall(function() langSet(nil) end)
 
 return Library
