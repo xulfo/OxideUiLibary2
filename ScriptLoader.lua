@@ -45,7 +45,10 @@ local GAME_NAMES = {
 -- ══════════════════════════════════════════════════════════════════════════════
 -- CACHE + STALE-PROTECTION
 -- ══════════════════════════════════════════════════════════════════════════════
-local LIB_MARKER  = "ChatFree"   -- marker string that ONLY exists in the current (chat-free) library build
+-- Marker string that ONLY exists in the current library build. It moved from
+-- "ChatFree" to the language engine marker so a stale CDN copy (chat-free but
+-- without auto language detection) is rejected and refetched instead.
+local LIB_MARKER  = "LANGUAGE (auto-detected UI translation)"
 local CACHE_TTL   = 300          -- seconds a downloaded file is reused before a refresh
 
 -- Session-wide download cache (survives re-executions of this script).
@@ -228,7 +231,9 @@ end
 local function LibraryUsable(lib)
     return type(lib) == "table"
         and type(lib.CreateWindow) == "function"
-        and lib.ChatFree == true      -- only the current chat-free build is accepted
+        and lib.ChatFree == true               -- only the current chat-free build is accepted
+        and type(lib.SetLanguage) == "function" -- ... and it must know the language API
+        and type(lib.Languages) == "table"
 end
 
 local function LoadLibrary()
