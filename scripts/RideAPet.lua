@@ -9,7 +9,7 @@ do
     local prev = _G.ArcRideAPet
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
-local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.9" }
+local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.10" }
 _G.ArcRideAPet = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
@@ -107,6 +107,8 @@ local S = {
     autoHatch = true,
     hatchDelay = 1.0,
     maxEggTravel = 0,               -- unused: no distance limit any more (instant TP)
+    volcanicLairPath = true,        -- Volcanic Eggs: enter the lair through its door first
+    lairSettle = 0.6,               -- how long the server may take to see us inside the lair
     pickupRetries = 8,              -- attempts per egg (server position lag)
     deliverDelay = 0,               -- pause after the pickup before heading home (0 = instant)
     useRemotes = true,              -- hard wired: EggPickup/EggArrivalClaim are always fired directly
@@ -385,6 +387,96 @@ local function TravelToEgg(egg)
     return TravelToCFrame(target)
 end
 
+-- ==============================================================================
+-- VOLCANIC EGG - GUARDIAN LAIR PATH
+--
+-- "Volcanic Egg" is the only egg with RequiresVolcano/SpecificSpawn (GameData.Eggs).
+-- Its pad (Workspace.EggSpawns.Volcanic) is inside the sleeping dragon's lair
+-- (Workspace.Volcano.VolcanoIsland.SleepingVolkaris, region Workspace.GuardianBounds).
+-- The server only accepts the pickup while we count as "inside the lair", which the
+-- plain instant TP is not: it answers "not inside the lair (enter through its door)".
+-- So: enter through the lair door first, wait for the server's own InVolcano marker,
+-- then travel to the egg and claim.
+-- ==============================================================================
+local VOLCANIC_EGG = "Volcanic Egg"
+
+local function IsVolcanicEgg(egg)
+    if not egg then return false end
+    if egg.name == VOLCANIC_EGG then return true end
+    local rec = egg.record
+    if not rec then return false end
+    local ok, val = pcall(function() return rec:GetAttribute("Egg") end)
+    return ok and val == VOLCANIC_EGG
+end
+
+-- The door the lair is entered through (Workspace.Volcano.VolcanoEntrance)
+local function LairDoor()
+    local vol = Workspace:FindFirstChild("Volcano")
+    if not vol then return nil end
+    local p = vol:FindFirstChild("VolcanoEntrance")
+    if p and p:IsA("BasePart") then return p end
+    for _, c in ipairs(vol:GetChildren()) do
+        if c:IsA("BasePart") and string.find(string.lower(c.Name), "entrance", 1, true) then
+            return c
+        end
+    end
+    return nil
+end
+
+-- The lair region box (GameData.Guardian.BoundsTag = "GuardianBounds")
+local function LairBounds()
+    local b = Workspace:FindFirstChild("GuardianBounds")
+    if b and b:IsA("BasePart") then return b end
+    return nil
+end
+
+local function InBox(part, pos)
+    if not (part and typeof(pos) == "Vector3") then return false end
+    local ok, res = pcall(function()
+        local v = part.CFrame:PointToObjectSpace(pos)
+        local h = part.Size * 0.5
+        return math.abs(v.X) <= h.X and math.abs(v.Y) <= h.Y and math.abs(v.Z) <= h.Z
+    end)
+    return ok and res == true
+end
+
+-- The server's own "I am inside the lair" marker (set server side)
+local function ServerSeesInsideLair()
+    local ok, val = pcall(function() return LP:GetAttribute("InVolcano") end)
+    return ok and val == true
+end
+
+local function InsideLair()
+    local hrp = GetHRP()
+    local b = LairBounds()
+    if hrp and b and InBox(b, hrp.Position) then return true end
+    return ServerSeesInsideLair()
+end
+
+-- Walk in through the lair door and wait until the server counts us as inside.
+local function EnterLair()
+    if ServerSeesInsideLair() then return true end
+    local door = LairDoor()
+    for _ = 1, 5 do
+        if HUB.dead then return false end
+        if door then
+            local look = door.CFrame.LookVector
+            -- stand in front of it, then step through it (the entry is the door)
+            for _, step in ipairs({ -7, 0, 7, 0 }) do
+                TravelToCFrame(CFrame.new(door.Position + look * step + Vector3.new(0, 2, 0)))
+                task.wait(0.12)
+            end
+        end
+        local waited = 0
+        while waited < (tonumber(S.lairSettle) or 0.6) do
+            if ServerSeesInsideLair() then return true end
+            task.wait(0.05)
+            waited = waited + 0.05
+        end
+    end
+    return ServerSeesInsideLair() or InsideLair()
+end
+
 -- LoS eggs (tag EggPickupRequiresLineOfSight / RequiresLineOfSight) need line of
 -- sight - aim the camera at the egg after the TP.
 local function AimCameraAtEgg(rendered)
@@ -463,6 +555,12 @@ local function CollectEgg(egg, tries)
     if not egg or HUB.dead then return false, "no target" end
     if #CarriedEggs() > 0 then return false, "carry full" end
     local before = #CarriedEggs()
+    -- A Volcanic Egg is behind the lair door: go in first, otherwise the server
+    -- only answers "not inside the lair (enter through its door)".
+    local volcanic = IsVolcanicEgg(egg)
+    if volcanic and S.volcanicLairPath ~= false and not ServerSeesInsideLair() then
+        EnterLair()
+    end
     lastPickup = { mode = nil, reason = nil, name = egg.name, hold = nil, method = nil }
     local function WaitBasket(seconds)
         local waited = 0
@@ -507,7 +605,16 @@ local function CollectEgg(egg, tries)
                 TravelToCFrame(CFrame.new(near.Position + Vector3.new(0, math.max(3, maxDist - 2), 0)))
             end
         end
-        -- 2) claim immediately, right after the TP (same tick)
+        -- 2) claim: for the Volcanic Egg the server has to count us as inside the
+        -- lair, so give its own position copy a moment before claiming.
+        if volcanic then
+            local waited = 0
+            local settle = tonumber(S.lairSettle) or 0.6
+            while waited < settle and not ServerSeesInsideLair() and not HUB.dead do
+                task.wait(0.05)
+                waited = waited + 0.05
+            end
+        end
         Claim()
         if WaitBasket(0.06) then return true end
         -- 3) follow-up in case the server has not seen the TP yet
@@ -516,6 +623,10 @@ local function CollectEgg(egg, tries)
         -- carry full -> stop hammering
         if lastPickup.mode == "BasketFull" or (lastPickup.reason or ""):find("basket") then
             return false, "carry full"
+        end
+        -- Volcanic: the server still says we are not in the lair -> step in again
+        if volcanic and (lastPickup.reason or ""):find("lair") then
+            EnterLair()
         end
     end
     if #CarriedEggs() > before then return true end
@@ -1661,6 +1772,10 @@ eggsLoopSub:AddSlider({
     Name = "Pickup Attempts", Min = 2, Max = 20, Default = 8, Flag = "eggs_pickuptries",
     Callback = safeCallback(function(v) S.pickupRetries = math.floor(tonumber(v) or 8) end)
 })
+eggsLoopSub:AddToggle({
+    Name = "Volcanic Lair path", Default = true, Flag = "eggs_lairpath",
+    Callback = safeCallback(function(v) S.volcanicLairPath = v end)
+})
 eggsLoopSub:AddSlider({
     Name = "Plant/Hatch every", Min = 0, Max = 30, Default = 3, Suffix = "s", Flag = "eggs_sideinterval",
     Callback = safeCallback(function(v) S.sideInterval = tonumber(v) or 3 end)
@@ -2049,6 +2164,12 @@ HUB.actions = {
     RenderedEggs = RenderedEggs,
     EggTools = EggTools,
     GrowthRemaining = GrowthRemaining,
+    IsVolcanicEgg = IsVolcanicEgg,
+    LairDoor = LairDoor,
+    LairBounds = LairBounds,
+    InsideLair = InsideLair,
+    ServerSeesInsideLair = ServerSeesInsideLair,
+    EnterLair = EnterLair,
 }
 StartLoops()
 Notify("Arc HUB", "Ride a Pet loaded", "Success", 3)
