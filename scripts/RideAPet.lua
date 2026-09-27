@@ -9,7 +9,7 @@ do
     local prev = _G.ArcRideAPet
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
-local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.8" }
+local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.9" }
 _G.ArcRideAPet = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
@@ -98,20 +98,20 @@ local S = {
     -- Egg loop
     eggLoop = false,
     eggPriority = "Best Value",     -- Fast Cycle | Best Value | Nearest
-    eggRarities = {},               -- leer = alle
-    eggLoopDelay = 0,               -- Zusatzpause pro Zyklus (0 = sofort weiter zum naechsten Ei)
-    sideInterval = 3,               -- Pflanzen/Hatchen nur alle X Sekunden (bremsen sonst den Zyklus)
-    autoDeliver = true,             -- eingesammeltes Ei heim liefern (Cash)
-    autoPlant = false,              -- Inventar-Eier in freie Nester pflanzen
-    plantMinLuck = 0,               -- nur Eier ab diesem Luck pflanzen
+    eggRarities = {},               -- empty = all
+    eggLoopDelay = 0,               -- extra pause per cycle (0 = straight to the next egg)
+    sideInterval = 3,               -- planting/hatching only every X seconds (they would slow the cycle)
+    autoDeliver = true,             -- deliver a collected egg home (cash)
+    autoPlant = false,              -- plant inventory eggs into free nests
+    plantMinLuck = 0,               -- only plant eggs from this luck value on
     autoHatch = true,
     hatchDelay = 1.0,
-    maxEggTravel = 0,               -- unbenutzt: kein Distanzlimit mehr (Instant-TP)
-    pickupRetries = 8,              -- Versuche pro Ei (Server-Positions-Lag)
-    deliverDelay = 0,               -- Pause nach dem Pickup, bevor es heim zur Basis geht (0 = sofort)
-    useRemotes = true,              -- fest an: EggPickup/EggArrivalClaim werden immer direkt gefeuert
+    maxEggTravel = 0,               -- unused: no distance limit any more (instant TP)
+    pickupRetries = 8,              -- attempts per egg (server position lag)
+    deliverDelay = 0,               -- pause after the pickup before heading home (0 = instant)
+    useRemotes = true,              -- hard wired: EggPickup/EggArrivalClaim are always fired directly
 
-    usePrompt = false,              -- zusaetzlich den echten ProximityPrompt feuern (kostet dessen Hold-Dauer)
+    usePrompt = false,              -- additionally fire the real ProximityPrompt (costs its hold time)
     -- Pet loop
     petLoop = false,
     autoCollectPets = true,
@@ -136,24 +136,24 @@ local S = {
     petEsp = false,
     playerEsp = false,
     espRarities = {},
-    espEggLabels = true,        -- Name/Rarität/Distanz am Marker anzeigen
-    espEggMaxDist = 0,          -- 0 = alle Eier markieren
-    -- Player (nur noch Farm-Noclip - der Player-Tab ist komplett entfernt)
+    espEggLabels = true,        -- show name/rarity/distance on the marker
+    espEggMaxDist = 0,          -- 0 = mark every egg
+    -- Player (only the farm noclip is left - the Player tab is removed for good)
     noclip = false,
-    farmNoclip = true,          -- Noclip automatisch während des Egg-Farms
+    farmNoclip = true,          -- noclip automatically while the egg farm is running
     farmNoclipActive = false,
     -- Luck-Upgrades (Progress-Tab)
-    luckBuying = false,         -- Button "Luck kaufen"
-    luckBuyDelay = 2,           -- Delay zwischen den Käufen
+    luckBuying = false,         -- the "Buy luck" button
+    luckBuyDelay = 2,           -- delay between purchases
     luckBuyMode = "1 Upgrade",  -- "1 Upgrade" | "Max"
-    upgradeReserve = 100000,    -- Cash, das für Upgrades nicht angetastet wird
+    upgradeReserve = 100000,    -- cash that upgrades must not touch
     -- intern
     busy = false,
     lastEggError = nil,
     stats = { eggs = 0, hatched = 0, delivered = 0, planted = 0, collected = 0, rebirths = 0, nests = 0, cash = 0 },
 }
 
--- Debug-Hooks (erlaubt Live-Inspektion/Steuerung von außen, z.B. via Executor)
+-- Debug hooks (live inspection and control from outside, e.g. via executor)
 HUB.state = S
 
 -- ==============================================================================
@@ -201,14 +201,14 @@ local function PivotCharacter(cframe)
         hrp.AssemblyAngularVelocity = Vector3.zero
     end)
     if ok then
-        -- merken, wo WIR den Charakter abgesetzt haben (für die Eingriff-Erkennung)
+        -- remember where WE placed the character (used to detect outside interference)
         HUB.lastPlacedPos = cframe.Position
         HUB.lastPlacedAt = os.clock()
     end
     return ok
 end
 
--- Zielpunkte wie im Referenz-Script: 10 studs über der Oberkante
+-- Target points like in the reference script: 10 studs above the top edge
 local EGG_HEIGHT_OFFSET = 10
 
 local function EggTopCFrame(model)
@@ -220,17 +220,17 @@ end
 
 local function PartTopCFrame(part)
     if not part or not part:IsA("BasePart") or not part.Parent then return nil end
-    -- genau wie getBaseplateTopCFrame im Referenz-Script: cf * (0, size.Y/2 + 10, 0)
+    -- exactly like getBaseplateTopCFrame in the reference script: cf * (0, size.Y/2 + 10, 0)
     return part.CFrame * CFrame.new(0, part.Size.Y * 0.5 + EGG_HEIGHT_OFFSET, 0)
 end
 
--- Reise zu einem CFrame: immer harter Pivot-TP wie im Referenz-Script (kein Tween)
+-- Travel to a CFrame: always a hard pivot TP like in the reference script (no tween)
 local function TravelToCFrame(cframe)
     if typeof(cframe) ~= "CFrame" then return false end
     return PivotCharacter(cframe)
 end
 
--- Reisen zum Ei / zur Basis / zum Nest (per Position)
+-- Travel to the egg / to the base / to the nest (by position)
 local function TravelTo(pos, yOffset)
     if typeof(pos) ~= "Vector3" then return false end
     return TravelToCFrame(CFrame.new(pos + Vector3.new(0, yOffset or 3, 0)))
@@ -247,7 +247,7 @@ local function PlayerStat(name)
     return v and v.Value or 0
 end
 
--- Kurze Zahl fürs UI (37,4 Mrd)
+-- Short number for the UI (37.4B)
 local function ShortNumber(n)
     n = tonumber(n) or 0
     if n >= 1e9 then return string.format("%.2f B", n / 1e9) end
@@ -256,18 +256,18 @@ local function ShortNumber(n)
     return tostring(math.floor(n))
 end
 
--- Letzter Prompt-Kontakt (echte Hold-Dauer / Aktions-Text) fürs UI
+-- Last prompt contact (real hold time / action text) for the UI
 local lastHold = { duration = nil, method = nil, action = nil }
-local PROMPT_SETTLE = 0.05   -- dem Server Zeit geben, den TP zu sehen (schnell, aber nicht 0)
+local PROMPT_SETTLE = 0.05   -- give the server time to see the TP (fast, but not 0)
 
--- Echter Prompt-Trigger - genau das, was ein Executor-Feature "Proximity Prompt"
--- bzw. das Referenz-Script macht: EIN fireproximityprompt auf den Prompt des Spiels.
--- Die Hold-Dauer des Prompts wertet der Executor dabei selbst aus.
+-- Real prompt trigger - exactly what an executor's "Proximity Prompt" feature
+-- or the reference script does: ONE fireproximityprompt on the game's prompt.
+-- The executor evaluates the prompt's hold time itself.
 --
--- WICHTIG: kein prompt:InputHoldBegin()/InputHoldEnd() mehr! Damit laesst sich der
--- Prompt-Status im Client verhaken (Hold ohne Ende, z.B. wenn das Ei waehrend des
--- Haltens verschwindet) - danach geht KEIN Prompt mehr, auch nicht in anderen
--- Scripts. Genau das war der Fehler.
+-- IMPORTANT: no prompt:InputHoldBegin()/InputHoldEnd() any more! That wedges the
+-- prompt state on the client (a hold without end, e.g. when the egg disappears
+-- while holding) - after that NO prompt works, not even in other scripts.
+-- That was the bug.
 local function FirePrompt(prompt)
     if not prompt or not prompt:IsA("ProximityPrompt") or not prompt.Parent then return false end
     if prompt.Enabled == false then return false end
@@ -281,11 +281,11 @@ end
 -- ==============================================================================
 -- EGG SYSTEM
 --
--- Der Server prüft beim Pickup die Distanz zwischen Spieler und Spawn-Punkt des
--- Eis (Limit 90 studs) anhand SEINER Kopie der Spielerposition. Nach einem
--- Teleport ist die erst ~0,3-0,5s später aktuell, deshalb scheiterte der alte
--- ProximityPrompt-Weg ständig mit "refused: too far from its spawn point".
--- Neu: EggPickup-Remote direkt feuern und wiederholen, bis der Korb voll ist.
+-- On pickup the server checks the distance between the player and the egg's spawn
+-- point (limit 90 studs) using ITS OWN copy of the player position. After a
+-- teleport that copy is only current ~0.3-0.5s later, which is why the old
+-- ProximityPrompt route kept failing with "refused: too far from its spawn point".
+-- New: fire the EggPickup remote directly and retry until the carry is full.
 -- ==============================================================================
 local function ServerDataFolder()
     return RS:FindFirstChild("ServerData")
@@ -298,7 +298,7 @@ local function EggPickupRemote() return Remote("EggPickup") end
 local function EggPlacedRemote() return Remote("EggPlaced") end
 local function ArrivalClaimRemote() return Remote("EggArrivalClaim") end
 
--- Letzte Server-Antwort auf unser Pickup (echter Grund statt Rätselraten)
+-- Last server answer to our pickup (the real reason instead of guesswork)
 local lastPickup = { mode = nil, reason = nil, name = nil }
 if EggPickupRemote() then
     track(EggPickupRemote().OnClientEvent:Connect(function(mode, reason, name)
@@ -306,7 +306,7 @@ if EggPickupRemote() then
     end))
 end
 
--- Alle Feld-Eier aus den Server-Records (nicht die gerenderten Attrappen)
+-- All field eggs from the server records (not the rendered stand-ins)
 local function EggRecords()
     local out = {}
     local folder = ActiveEggsFolder()
@@ -338,7 +338,7 @@ local function EggRecords()
     return out
 end
 
--- Gerenderte Feld-Eier (der Client baut die Modelle inkl. Pickup-Prompt selbst)
+-- Rendered field eggs (the client builds these models incl. pickup prompt itself)
 local function RenderedEggs()
     local out = {}
     local rendered = Workspace:FindFirstChild("RenderedEggs")
@@ -364,7 +364,7 @@ local function RenderedEggs()
     return out
 end
 
--- Gerendertes Ei zu einer Record-Position (für den Pickup-Prompt)
+-- Rendered egg for a record position (used for the pickup prompt)
 local function RenderedEggNear(pos)
     if typeof(pos) ~= "Vector3" then return nil end
     local best, bestD
@@ -375,8 +375,8 @@ local function RenderedEggNear(pos)
     return best
 end
 
--- Referenz-TP auf ein Feld-Ei: auf das gerenderte Modell (BoundingBox + 10 studs),
--- sonst auf die Server-Position. Kein Distanzlimit, immer harter Pivot.
+-- Reference TP onto a field egg: onto the rendered model (bounding box + 10 studs),
+-- otherwise onto the server position. No distance limit, always a hard pivot.
 local function TravelToEgg(egg)
     if not egg or typeof(egg.pos) ~= "Vector3" then return false end
     local rendered = RenderedEggNear(egg.pos)
@@ -385,8 +385,8 @@ local function TravelToEgg(egg)
     return TravelToCFrame(target)
 end
 
--- LoS-Eier (Tag EggPickupRequiresLineOfSight / RequiresLineOfSight) brauchen
--- Sichtkontakt - nach dem TP die Kamera auf das Ei ausrichten.
+-- LoS eggs (tag EggPickupRequiresLineOfSight / RequiresLineOfSight) need line of
+-- sight - aim the camera at the egg after the TP.
 local function AimCameraAtEgg(rendered)
     local prompt = rendered and rendered.prompt
     local part = prompt and prompt.Parent
@@ -408,8 +408,8 @@ local function RarityAllowed(rarity)
 end
 
 -- Priorisierung: Fast Cycle | Best Value | Nearest
--- Wie im Referenz-Script wird nur auf Eier getippt, die der Client wirklich
--- gerendert hat - nur dort sitzt der Pickup-Prompt, nur dort greift der Claim.
+-- Like in the reference script we only tap eggs the client really rendered -
+-- that is where the pickup prompt sits, and where the claim works.
 local function PickTargetEgg()
     local hrp = GetHRP()
     if not hrp then return nil end
@@ -425,12 +425,12 @@ local function PickTargetEgg()
     for _, egg in ipairs(EggRecords()) do
         if RarityAllowed(egg.rarity) then
             local travel = ((egg.pos - origin) * Vector3.new(1, 0, 1)).Magnitude
-            -- Kein Distanzlimit mehr: mit dem Instant-TP sind wir sofort am Ei. Das alte
-            -- Limit (gespeicherte 978 studs) liess nur noch nahe Common-Eier uebrig.
+            -- No distance limit any more: with the instant TP we are at the egg at once.
+            -- The old limit (a saved 978 studs) left only nearby common eggs.
             local maxTravel = 0
             if maxTravel <= 0 or travel <= maxTravel then
-                -- "Claimbar" (gerendert + Prompt) zaehlt nur, wenn wir den Prompt auch
-                -- wirklich mitfeuern. Mit dem Instant-Remote zaehlt der Wert allein.
+                -- "Claimable" (rendered + prompt) only counts when we actually fire the
+                -- prompt as well. With the instant remote the value alone counts.
                 local claimable = S.usePrompt and Claimable(egg) or false
                 local value = RarityRank(egg.rarity) * 1000 + egg.luck + egg.sell * 10
                 local score
@@ -442,7 +442,7 @@ local function PickTargetEgg()
                 else -- Best Value
                     score = value - travel * 0.1
                 end
-                -- Eier mit Prompt (gerendert) immer bevorzugen, der Rest nur als Notnagel
+                -- always prefer eggs with a prompt (rendered), the rest only as a fallback
                 if claimable and not bestClaimable then
                     best, bestScore, bestClaimable = egg, score, true
                 elseif claimable == bestClaimable and (not bestScore or score > bestScore) then
@@ -454,11 +454,11 @@ local function PickTargetEgg()
     return best
 end
 
--- Ei aufnehmen - INSTANT-Weg:
---   TP aufs Ei (10 studs über der Oberkante) -> EggPickup-Remote SOFORT feuern.
---   Keine Hold-Zeit, kein Settle, kein Warten auf den Prompt. Der echte
---   ProximityPrompt wird nur zusätzlich gefeuert, wenn "Prompt mitfeuern" an ist
---   (standardmässig aus, denn dessen Hold-Dauer kostet genau die Zeit, die wir wegwollen).
+-- Collect an egg - INSTANT route:
+--   TP onto the egg (10 studs above the top edge) -> fire the EggPickup remote RIGHT AWAY.
+--   No hold time, no settle, no waiting for the prompt. The real ProximityPrompt is
+--   only fired additionally when "Also fire real prompt" is on (off by default, because
+--   its hold time costs exactly the time we want to save).
 local function CollectEgg(egg, tries)
     if not egg or HUB.dead then return false, "no target" end
     if #CarriedEggs() > 0 then return false, "carry full" end
@@ -473,7 +473,7 @@ local function CollectEgg(egg, tries)
         return #CarriedEggs() > before
     end
     local remote = EggPickupRemote()
-    -- SOFORT claimen: Remote zuerst (eine Anfrage, keine Hold-Zeit)
+    -- Claim RIGHT AWAY: remote first (one request, no hold time)
     local function Claim()
         if remote then
             pcall(function() remote:FireServer(egg.id) end)
@@ -494,7 +494,7 @@ local function CollectEgg(egg, tries)
         if HUB.dead then return false, "unload" end
         if #CarriedEggs() > before then return true end
         if not egg.record.Parent then return false, "egg gone" end
-        -- 1.) harter TP direkt aufs Ei (10 studs über der Oberkante)
+        -- 1) hard TP straight onto the egg (10 studs above the top edge)
         local rendered = RenderedEggNear(egg.pos)
         local prompt = rendered and rendered.prompt
         TravelToCFrame((rendered and EggTopCFrame(rendered.model))
@@ -507,13 +507,13 @@ local function CollectEgg(egg, tries)
                 TravelToCFrame(CFrame.new(near.Position + Vector3.new(0, math.max(3, maxDist - 2), 0)))
             end
         end
-        -- 2.) sofort claimen, direkt nach dem TP (gleicher Tick)
+        -- 2) claim immediately, right after the TP (same tick)
         Claim()
         if WaitBasket(0.06) then return true end
-        -- 3.) Nachschlag, falls der Server den TP noch nicht gesehen hat
+        -- 3) follow-up in case the server has not seen the TP yet
         Claim()
         if WaitBasket(0.18) then return true end
-        -- Korb voll -> nicht weiter hämmern
+        -- carry full -> stop hammering
         if lastPickup.mode == "BasketFull" or (lastPickup.reason or ""):find("basket") then
             return false, "carry full"
         end
@@ -522,18 +522,18 @@ local function CollectEgg(egg, tries)
     return false, tostring(lastPickup.reason or lastPickup.mode or "no response")
 end
 
--- Liefern: in die eigene Baseplate -> der Spiel-Client claimt selbst (Cash)
+-- Deliver: over our own baseplate -> the game client claims it itself (cash)
 local function DeliverCarried()
     if #CarriedEggs() == 0 then return false, "carry empty" end
     local plot = OwnPlot()
     local base = plot and plot:FindFirstChild("Baseplate")
     if not base then return false, "no plot" end
     local cashBefore = PlayerCash()
-    -- Heimreise: 10 studs über der Baseplate (genau wie im Referenz-Script)
+    -- Trip home: 10 studs above the baseplate (exactly like the reference script)
     TravelToCFrame(PartTopCFrame(base) or CFrame.new(base.Position + Vector3.new(0, 6, 0)))
-    -- Claim SOFORT selbst feuern (statt auf den Spiel-Client zu warten), mit
-    -- wenigen Nachschlägen - die Position ist beim Server nach dem TP einen
-    -- Moment alt, deshalb wird wiederholt statt nur einmal.
+    -- Fire the claim ourselves RIGHT AWAY (instead of waiting for the game client),
+    -- with a few retries - the server's copy of the position is one moment old after
+    -- the TP, which is why we repeat instead of firing once.
     local claim = ArrivalClaimRemote()
     local names = {}
     for _, c in ipairs(CarriedEggs()) do names[#names + 1] = c.Name end
@@ -552,7 +552,7 @@ local function DeliverCarried()
     end
     if #CarriedEggs() > 0 then return false, "delivery stuck" end
     S.stats.delivered = S.stats.delivered + 1
-    -- Cash-Auswertung NICHT abwarten (sonst kostet jede Lieferung Extra-Zeit):
+    -- Do NOT wait for the cash evaluation (otherwise every delivery costs extra time):
     -- kurz schauen, den Rest asynchron nachtragen.
     local gained = PlayerCash() - cashBefore
     if gained > 0 then S.stats.cash = S.stats.cash + gained end
@@ -573,7 +573,7 @@ local function DeliverCarried()
     return true, gained
 end
 
--- Ei-Tools im Inventar (das sind die pflanzbaren Eier)
+-- Egg tools in the inventory (those are the plantable eggs)
 local function EggTools()
     local out = {}
     for _, c in ipairs({ LP:FindFirstChild("Backpack"), LP.Character }) do
@@ -627,7 +627,7 @@ local function NestPosition(nest, plot)
     return base and base.Position or nil
 end
 
--- Bestes Inventar-Ei in ein freies Nest pflanzen (Spiel-Methode, ohne Prompt)
+-- Plant the best inventory egg into a free nest (the game's method, no prompt)
 local function PlantBestEgg(minLuck)
     if HUB.dead then return false, "unload" end
     local remote = EggPlacedRemote()
@@ -652,7 +652,7 @@ local function PlantBestEgg(minLuck)
         pcall(function() humanoid:EquipTool(pick.tool) end)
         task.wait(0.35)
     end
-    -- Ohne gehaltenes Ei-Tool darf NICHT gefeuert werden, sonst ist das Ei weg
+    -- Never fire without a held egg tool, otherwise the egg is gone
     if not HeldEggTool() then return false, "egg not equipped" end
     local eggsFolder = plot and PlotEggs(plot)
     local before = eggsFolder and #eggsFolder:GetChildren() or 0
@@ -663,7 +663,7 @@ local function PlantBestEgg(minLuck)
     end
     if nest:GetAttribute("Occupied") == true then return false, "nest already taken" end
     if LP:GetAttribute("NoNest") == true then
-        -- Variante ohne Nest: irgendwo im eigenen Plot
+        -- variant without a nest: somewhere on our own plot
         local base = plot and plot:FindFirstChild("Baseplate")
         local plantPos = base and base.Position or pos
         if not plantPos then return false, "no position" end
@@ -687,7 +687,7 @@ local function PlantBestEgg(minLuck)
     return false, "place refused"
 end
 
--- Wachstumsrestzeit eines Plot-Eis (nutzt die Spielmodule, Fallback: Serverzeit)
+-- Remaining growth time of a plot egg (uses the game modules, fallback: server time)
 local function GrowthRemaining(egg)
     local data = egg:FindFirstChild("EggData")
     local placeTime = data and data:FindFirstChild("PlaceTime")
@@ -710,7 +710,7 @@ end
 
 local function HatchEgg(egg)
     local pp = egg.PrimaryPart or egg:FindFirstChildWhichIsA("BasePart", true)
-    -- Echter Weg zuerst: Hatch-Prompt des Spiels (TP 10 studs über die Oberkante)
+    -- Real route first: the game's hatch prompt (TP 10 studs above the top edge)
     local prompt = egg:FindFirstChild("Hatch", true)
     if prompt and prompt:IsA("ProximityPrompt") then
         if pp then
@@ -731,8 +731,8 @@ local function HatchEgg(egg)
     return (pcall(function() remote:FireServer({ EggKey = key }) end)), "remote"
 end
 
--- Alle reifen Eier hatchen
--- (der Hatch läuft als Animation, das Ei verschwindet erst ein paar Sekunden später)
+-- Hatch every ripe egg
+-- (the hatch runs as an animation, the egg only disappears a few seconds later)
 local function HatchReadyEggs()
     local plot = OwnPlot()
     local eggs = PlotEggs(plot)
@@ -787,7 +787,7 @@ local function HeldPets()
     return out
 end
 
--- Pet-Earnings einsammeln: zuerst der echte Prompt am Pet, erst auf Wunsch der Remote
+-- Collect pet earnings: the real prompt on the pet first, the remote only on request
 local function PetCollectPrompt(pet)
     for _, d in ipairs(pet:GetDescendants()) do
         if d:IsA("ProximityPrompt") then
@@ -845,7 +845,7 @@ local function FoodTools()
     return out
 end
 
--- Pets füttern (Futter-Tool ausrüsten + Feed-Prompt)
+-- Feed pets (equip a food tool + use the feed prompt)
 local function FeedPets()
     local foods = FoodTools()
     if #foods == 0 then return false, "no food" end
@@ -865,8 +865,8 @@ local function FeedPets()
     return true, fed
 end
 
--- Beste gehaltene Pets platzieren (nutzt die Spiel-eigene PlaceBest-Logik,
--- Fallback: PlacePet-Remote mit PetKey + freiem Nest-Anker)
+-- Place the best held pets (uses the game's own place-best logic,
+-- fallback: PlacePet remote with PetKey + a free nest anchor)
 local function PlaceBestPets()
     local pg = LP:FindFirstChildOfClass("PlayerGui")
     local main = pg and pg:FindFirstChild("Main")
@@ -1030,7 +1030,7 @@ local function UpgradeRemote()
     return plotRemotes and plotRemotes:FindFirstChild("Upgrades")
 end
 
--- Kauft Luck-Upgrades: mode = "Max" oder "1 Upgrade", solange die Reserve bleibt
+-- Buys luck upgrades: mode = "Max" or "1 Upgrade", as long as the reserve stays
 local function BuyHatchUpgrades(mode, force)
     local remote = UpgradeRemote()
     if not remote then return false, "upgrades remote missing" end
@@ -1063,7 +1063,7 @@ local ESP_COLORS = {
     Volcanic = Color3.fromRGB(255, 120, 40),
 }
 
--- Highlights werden wiederverwendet (kein Neuaufbau pro Refresh)
+-- Highlights are reused (no rebuild per refresh)
 local espMaps = { egg = {}, pet = {}, player = {} }
 
 local function EspRarityOk(rarity)
@@ -1083,9 +1083,9 @@ local function HideESP(kind)
 end
 local ClearHighlights = HideESP
 
--- ── Egg-Marker: zeigt ALLE ungeclaimten Feld-Eier aus ServerData.ActiveEggs,
---    auch die der Client gerade nicht zeichnet. Damit kann man zu Fuß hinlaufen
---    und selbst aufsammeln. ───────────────────────────────────────────────────
+-- ── Egg markers: all unclaimed field eggs from ServerData.ActiveEggs,
+--    even those the client is not drawing right now, so you can walk over and
+--    pick them up yourself. ───────────────────────────────────────────────────
 local eggMarkers = {}          -- record-Id -> { part, highlight, gui, label }
 local markerFolder = nil
 
@@ -1122,7 +1122,7 @@ local function MakeEggMarker(id, egg)
     part.Size = Vector3.new(3, 3, 3)
     part.Anchored = true
     part.CanCollide = false
-    part.CanQuery = false       -- verfälscht keine Raycasts des Spiels
+    part.CanQuery = false       -- does not distort the game's raycasts
     part.CanTouch = false
     part.CastShadow = false
     part.Material = Enum.Material.Neon
@@ -1197,14 +1197,14 @@ local function UpdateEggESP()
     local labels = S.espEggLabels ~= false
     local rendered = RenderedEggs()
 
-    -- 1a) ALLE ungeclaimten Feld-Eier (Server-Records) -> Marker + Highlight
+    -- 1a) ALL unclaimed field eggs (server records) -> marker + highlight
     for _, egg in ipairs(EggRecords()) do
         if EspRarityOk(egg.rarity) then
             local dist = origin and ((egg.pos - origin) * Vector3.new(1, 0, 1)).Magnitude or 0
             if maxDist <= 0 or dist <= maxDist then
                 local color = ESP_COLORS[egg.rarity] or Color3.new(1, 1, 1)
                 local outline = egg.mutation and Color3.fromRGB(255, 215, 80) or Color3.fromRGB(255, 255, 255)
-                -- passendes gerendertes Modell, falls der Client es zeichnet
+                -- matching rendered model in case the client draws it
                 local model, modelDist
                 for _, r in ipairs(rendered) do
                     local d = (r.pos - egg.pos).Magnitude
@@ -1244,7 +1244,7 @@ local function UpdateEggESP()
         end
     end
 
-    -- 1b) gerenderte Eier ohne Record (z.B. gerade am Runterfallen) trotzdem zeigen
+    -- 1b) still show rendered eggs without a record (e.g. currently falling)
     for _, r in ipairs(rendered) do
         if not known[r.model] and EspRarityOk(r.rarity) then
             local h = HighlightFor("egg", r.model)
@@ -1257,7 +1257,7 @@ local function UpdateEggESP()
         end
     end
 
-    -- Marker aufräumen (geclaimt, weg oder rausgefiltert)
+    -- clean up markers (claimed, gone or filtered out)
     for id, m in pairs(eggMarkers) do
         if not seenIds[id] then
             if m.highlight then
@@ -1269,7 +1269,7 @@ local function UpdateEggESP()
         end
     end
 
-    -- 2) Plot-Eier (eigene grün umrandet, fremde weiß)
+    -- 2) plot eggs (our own outlined green, other players' white)
     local plots = Workspace:FindFirstChild("Plots")
     if plots then
         for _, plot in ipairs(plots:GetChildren()) do
@@ -1292,7 +1292,7 @@ local function UpdateEggESP()
         end
     end
 
-    -- 3) Eier im eigenen Korb
+    -- 3) eggs in our own carry
     for _, c in ipairs(CarriedEggs()) do
         local h = HighlightFor("egg", c)
         if h then
@@ -1363,7 +1363,7 @@ local function RefreshESP()
 end
 
 -- ==============================================================================
--- NOCLIP (nur fuer den Egg-Farm - kein manueller Toggle mehr)
+-- NOCLIP (only for the egg farm - no manual toggle any more)
 -- ==============================================================================
 local function StartNoclip()
     if HUB.noclipConn then return end
@@ -1377,8 +1377,8 @@ local function StartNoclip()
     end)
 end
 
--- Kollisionen wiederherstellen, wenn kein Noclip mehr gebraucht wird
--- (nur echte Körperteile, Accessoires bleiben wie sie sind)
+-- Restore collisions when noclip is no longer needed
+-- (real body parts only, accessories stay as they are)
 local BODY_PARTS = {
     HumanoidRootPart = true, Head = true, UpperTorso = true, LowerTorso = true, Torso = true,
     LeftUpperArm = true, RightUpperArm = true, LeftLowerArm = true, RightLowerArm = true,
@@ -1395,7 +1395,7 @@ local function RestoreCollisions()
     end
 end
 
--- Farm-Noclip: nur während des Egg-Loops aktiv
+-- Farm noclip: active only while the egg loop runs
 local function SetFarmNoclip(on)
     if S.farmNoclipActive == on then return end
     S.farmNoclipActive = on
@@ -1432,8 +1432,8 @@ local function EggLoopStep()
     if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
         return
     end
-    -- Eingriff-Erkennung: hat uns jemand/etwas anderes bewegt, dann kurz still halten,
-    -- sonst kämpfen wir gegen den Nutzer (oder ein zweites Script) an.
+    -- Interference detection: if somebody/something else moved us, hold still briefly,
+    -- otherwise we fight the user (or a second script).
     local hrpNow = GetHRP()
     if hrpNow and HUB.lastPlacedPos and HUB.lastPlacedAt then
         local fresh = (os.clock() - HUB.lastPlacedAt) < 0.6
@@ -1450,7 +1450,7 @@ local function EggLoopStep()
     S.busy = true
     local did = false
     local ok, err = pcall(function()
-        -- 1) TP aufs gerenderte Ei (10 studs über der Oberkante) -> Claim-Prompt
+        -- 1) TP onto the rendered egg (10 studs above the top edge) -> claim prompt
         if #CarriedEggs() == 0 then
             local target = PickTargetEgg()
             if target then
@@ -1463,18 +1463,18 @@ local function EggLoopStep()
                 end
             end
         end
-        -- 1b) Pause vor Heim-TP (Standard 0 = sofort weiter)
+        -- 1b) pause before the trip home (default 0 = straight on)
         local delay = tonumber(S.deliverDelay) or 0
         if did and delay > 0 then
             local t0 = os.clock()
             while not HUB.dead and (os.clock() - t0) < delay do task.wait(0.02) end
         end
-        -- 2) TP zurueck ueber die eigene Baseplate -> abliefern (zahlt Cash)
+        -- 2) TP back over our own baseplate -> deliver (pays cash)
         if #CarriedEggs() > 0 and S.autoDeliver then
             if DeliverCarried() then did = true end
         end
-        -- 3) Nebenaufgaben (Pflanzen/Hatchen) nur alle X Sekunden - die Teleports
-        --    darin wuerden den schnellen Egg-Zyklus sonst ausbremsen.
+        -- 3) side tasks (planting/hatching) only every X seconds - their teleports
+        --    would otherwise slow the fast egg cycle down.
         local now = os.clock()
         local every = tonumber(S.sideInterval) or 3
         if every >= 0 and (now - (HUB.lastSideAt or 0)) >= every then
@@ -1515,10 +1515,10 @@ local function StartLoops()
     task.spawn(function()
         while not HUB.dead do
             if S.eggLoop then
-                SetFarmNoclip(S.farmNoclip)   -- durch Wände zum Ei / zurück zum Plot
+                SetFarmNoclip(S.farmNoclip)   -- through walls to the egg / back to the plot
                 local ok, did = pcall(EggLoopStep)
                 if did then
-                    -- sofort weiter zum naechsten Ei; nur die optionale Zusatzpause bremst
+                    -- straight on to the next egg; only the optional extra delay slows it
                     local extra = tonumber(S.eggLoopDelay) or 0
                     if extra > 0 then task.wait(extra) end
                 else
@@ -1554,7 +1554,7 @@ local function StartLoops()
     end)
     task.spawn(function()
         while not HUB.dead do
-            -- immer aufrufen: schaltet ESP auch ab, wenn die Flags von außen kommen
+            -- always call it: also turns the ESP off when the flags come from outside
             pcall(RefreshESP)
             task.wait(0.5)
         end
@@ -1974,58 +1974,11 @@ espSub:AddButton({
     end)
 })
 
--- Player-Tab ist komplett entfernt (Speed/Jump/Fly/Gravity/FOV/Fullbright/
--- FPS-Modus/Anti-AFK/Anti-Kick/Auto-Rejoin) - das war die Fehlerquelle.
+-- Player tab is completely removed (Speed/Jump/Fly/Gravity/FOV/Fullbright/FPS mode/
+-- Anti-AFK/Anti-Kick/Auto-Rejoin) - that was the cause.
 
 -- ---------------------------------------------------------------- Settings
--- Language: the UI library detects the player's language at load and translates
--- every label / button / notification from the English source text. "Auto"
--- follows that detection, a name overrides it (saved with the config).
-local function LanguageList()
-    local list = (type(Library) == "table" and rawget(Library, "Languages")) or nil
-    local out = {}
-    if type(list) ~= "table" then return out end
-    for _, entry in ipairs(list) do
-        if type(entry) == "table" and type(entry.code) == "string" and type(entry.name) == "string" then
-            out[#out + 1] = entry
-        end
-    end
-    return out
-end
-local function LanguageNameForCode(code)
-    for _, entry in ipairs(LanguageList()) do
-        if entry.code == code then return entry.name end
-    end
-    return tostring(code or "?")
-end
-local function LanguageOptions()
-    local out = { "Auto" }
-    for _, entry in ipairs(LanguageList()) do
-        out[#out + 1] = entry.name
-    end
-    return out
-end
-local function ApplyLanguage(pick)
-    local languages = LanguageList()
-    if #languages == 0 or type(Library.SetLanguage) ~= "function" then
-        return Notify("Language", "UI library without language support", "Error")
-    end
-    local code
-    if pick ~= "Auto" then
-        for _, entry in ipairs(languages) do
-            if entry.name == pick then code = entry.code break end
-        end
-    end
-    local active = Library:SetLanguage(code) or code or "en"
-    Notify("Language", LanguageNameForCode(active), "Info")
-end
-
 local setSub = setTab:AddSubTab("Main")
-setSub:AddDropdown({
-    Name = "Language", Options = LanguageOptions(), Default = "Auto", Flag = "ui_lang",
-    Callback = safeCallback(function(v) ApplyLanguage(v) end)
-})
-setSub:AddDivider()
 setSub:AddButton({
     Name = "Save config", Primary = true,
     Callback = safeCallback(function()
