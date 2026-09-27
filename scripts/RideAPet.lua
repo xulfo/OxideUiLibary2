@@ -99,7 +99,8 @@ local S = {
     eggLoop = false,
     eggPriority = "Best Value",     -- Fast Cycle | Best Value | Nearest
     eggRarities = {},               -- leer = alle
-    eggLoopDelay = 0.15,
+    eggLoopDelay = 0,               -- Zusatzpause pro Zyklus (0 = sofort weiter zum naechsten Ei)
+    sideInterval = 3,               -- Pflanzen/Hatchen nur alle X Sekunden (bremsen sonst den Zyklus)
     autoDeliver = true,             -- eingesammeltes Ei heim liefern (Cash)
     autoPlant = false,              -- Inventar-Eier in freie Nester pflanzen
     plantMinLuck = 0,               -- nur Eier ab diesem Luck pflanzen
@@ -107,7 +108,7 @@ local S = {
     hatchDelay = 1.0,
     maxEggTravel = 0,               -- 0 = unbegrenzt
     pickupRetries = 8,              -- Versuche pro Ei (Server-Positions-Lag)
-    deliverDelay = 0.15,            -- Pause nach dem Pickup, bevor es heim zur Basis geht
+    deliverDelay = 0,               -- Pause nach dem Pickup, bevor es heim zur Basis geht (0 = sofort)
     useRemotes = false,             -- false = NUR echter Spiel-Weg (Prompt), keine synthetischen Remotes
     -- Pet loop
     petLoop = false,
@@ -480,14 +481,18 @@ local function CollectEgg(egg, tries)
                 TravelToCFrame(CFrame.new(near.Position + Vector3.new(0, math.max(3, maxDist - 2), 0)))
             end
             AimCameraAtEgg(rendered)      -- LoS-Eier: Sichtkontakt herstellen
-            task.wait(PROMPT_SETTLE)      -- Server muss unsere neue Position sehen
-            if WaitBasket(0.02) then return true end
-            -- 2.) ECHTER Prompt mit seiner echten Hold-Dauer
+            -- 2.) ECHTER Prompt sofort feuern (kein Settle - der bremste jeden Zyklus).
+            -- Braucht der Server nach dem TP einen Moment, wird direkt nachgefeuert.
             if prompt.Parent then FirePrompt(prompt) end
             lastPickup.hold = lastHold.duration
             lastPickup.method = lastHold.method
             local hold = tonumber(lastHold.duration) or 0
-            if WaitBasket(math.max(0.2, hold + 0.15)) then return true end
+            if WaitBasket(0.04) then return true end
+            if prompt.Parent then
+                task.wait(0.02)
+                FirePrompt(prompt)
+            end
+            if WaitBasket(math.max(0.15, hold + 0.12)) then return true end
         end
         -- 3.) Nur auf Wunsch ("Direkte Remotes"): EggPickup als Notnagel feuern.
         -- Standard aus - Remotes koennen serverseitig auffallen und dann geht auch
@@ -515,8 +520,8 @@ local function DeliverCarried()
     local cashBefore = PlayerCash()
     -- Heimreise: 10 studs über der Baseplate (genau wie im Referenz-Script)
     TravelToCFrame(PartTopCFrame(base) or CFrame.new(base.Position + Vector3.new(0, 6, 0)))
-    for _ = 1, 40 do
-        task.wait(0.05)
+    for _ = 1, 100 do
+        task.wait(0.02)
         if #CarriedEggs() == 0 then break end
     end
     if #CarriedEggs() > 0 and S.useRemotes then
@@ -535,14 +540,24 @@ local function DeliverCarried()
     end
     if #CarriedEggs() > 0 then return false, "Lieferung haengt" end
     S.stats.delivered = S.stats.delivered + 1
-    -- Die Auszahlung landet manchmal ein paar Frames nach dem Claim
+    -- Cash-Auswertung NICHT abwarten (sonst kostet jede Lieferung Extra-Zeit):
+    -- kurz schauen, den Rest asynchron nachtragen.
     local gained = PlayerCash() - cashBefore
-    for _ = 1, 20 do
-        if gained > 0 then break end
-        task.wait(0.05)
-        gained = PlayerCash() - cashBefore
-    end
     if gained > 0 then S.stats.cash = S.stats.cash + gained end
+    task.spawn(function()
+        for _ = 1, 30 do
+            if HUB.dead then break end
+            task.wait(0.05)
+            local now = PlayerCash() - cashBefore
+            if now > gained then
+                S.stats.cash = S.stats.cash + (now - gained)
+                gained = now
+            elseif now > 0 then
+                break
+            end
+            if gained > 0 then break end
+        end
+    end)
     return true, gained
 end
 
@@ -1422,38 +1437,44 @@ local function EggLoopStep()
     end
     if HUB.manualUntil and os.clock() < HUB.manualUntil then return end
     S.busy = true
+    local did = false
     local ok, err = pcall(function()
         -- 1) TP aufs gerenderte Ei (10 studs über der Oberkante) -> Claim-Prompt
-        local pickedUp = false
         if #CarriedEggs() == 0 then
             local target = PickTargetEgg()
             if target then
                 local got, why = CollectEgg(target)
                 if got then
                     S.stats.eggs = S.stats.eggs + 1
-                    pickedUp = true
+                    did = true
                 else
                     S.lastEggError = tostring(why)
                 end
             end
         end
-        -- 1b) kurz am Ei stehen bleiben, bevor es heim geht (Server/Korb nachziehen lassen)
+        -- 1b) Pause vor Heim-TP (Standard 0 = sofort weiter)
         local delay = tonumber(S.deliverDelay) or 0
-        if pickedUp and delay > 0 then
+        if did and delay > 0 then
             local t0 = os.clock()
-            while not HUB.dead and (os.clock() - t0) < delay do task.wait(0.05) end
+            while not HUB.dead and (os.clock() - t0) < delay do task.wait(0.02) end
         end
         -- 2) TP zurueck ueber die eigene Baseplate -> abliefern (zahlt Cash)
         if #CarriedEggs() > 0 and S.autoDeliver then
-            DeliverCarried()
+            if DeliverCarried() then did = true end
         end
-        -- 3) Inventar-Eier in freie Nester pflanzen
-        if S.autoPlant then PlantBestEgg(S.plantMinLuck) end
-        -- 4) reife Eier hatchen
-        if S.autoHatch then HatchReadyEggs() end
+        -- 3) Nebenaufgaben (Pflanzen/Hatchen) nur alle X Sekunden - die Teleports
+        --    darin wuerden den schnellen Egg-Zyklus sonst ausbremsen.
+        local now = os.clock()
+        local every = tonumber(S.sideInterval) or 3
+        if every >= 0 and (now - (HUB.lastSideAt or 0)) >= every then
+            HUB.lastSideAt = now
+            if S.autoPlant then PlantBestEgg(S.plantMinLuck) end
+            if S.autoHatch then HatchReadyEggs() end
+        end
     end)
     if not ok then pcall(Notify, "Arc HUB", "Egg-Loop: " .. tostring(err), "Error", 3) end
     S.busy = false
+    return did
 end
 
 local function PetLoopStep()
@@ -1484,8 +1505,14 @@ local function StartLoops()
         while not HUB.dead do
             if S.eggLoop then
                 SetFarmNoclip(S.farmNoclip)   -- durch Wände zum Ei / zurück zum Plot
-                pcall(EggLoopStep)
-                task.wait(S.eggLoopDelay)
+                local ok, did = pcall(EggLoopStep)
+                if did then
+                    -- sofort weiter zum naechsten Ei; nur die optionale Zusatzpause bremst
+                    local extra = tonumber(S.eggLoopDelay) or 0
+                    if extra > 0 then task.wait(extra) end
+                else
+                    task.wait(0.12)           -- gerade nichts zu tun -> kurz warten
+                end
             else
                 SetFarmNoclip(false)          -- Farm aus -> Noclip wieder aus
                 task.wait(0.25)
@@ -1607,8 +1634,8 @@ eggsLoopSub:AddMultiDropdown({
     end)
 })
 eggsLoopSub:AddSlider({
-    Name = "Loop-Delay", Min = 0.05, Max = 3, Default = 0.15, Suffix = "s", Flag = "eggs_delay",
-    Callback = safeCallback(function(v) S.eggLoopDelay = tonumber(v) or 0.15 end)
+    Name = "Loop-Zusatzpause (0 = sofort)", Min = 0, Max = 3, Default = 0, Suffix = "s", Flag = "eggs_delay",
+    Callback = safeCallback(function(v) S.eggLoopDelay = tonumber(v) or 0 end)
 })
 eggsLoopSub:AddSlider({
     Name = "Max. Distanz (0 = egal)", Min = 0, Max = 5000, Default = 0, Suffix = " studs", Flag = "eggs_travel",
@@ -1635,8 +1662,12 @@ eggsLoopSub:AddSlider({
     Callback = safeCallback(function(v) S.pickupRetries = math.floor(tonumber(v) or 8) end)
 })
 eggsLoopSub:AddSlider({
-    Name = "Pause vor Heim-TP", Min = 0, Max = 5, Default = 0.15, Suffix = "s", Flag = "eggs_deliverdelay",
-    Callback = safeCallback(function(v) S.deliverDelay = tonumber(v) or 0.15 end)
+    Name = "Pause vor Heim-TP (0 = sofort)", Min = 0, Max = 5, Default = 0, Suffix = "s", Flag = "eggs_deliverdelay",
+    Callback = safeCallback(function(v) S.deliverDelay = tonumber(v) or 0 end)
+})
+eggsLoopSub:AddSlider({
+    Name = "Pflanzen/Hatch alle", Min = 0, Max = 30, Default = 3, Suffix = "s", Flag = "eggs_sideinterval",
+    Callback = safeCallback(function(v) S.sideInterval = tonumber(v) or 3 end)
 })
 eggsLoopSub:AddToggle({
     Name = "Direkte Remotes (Notnagel)", Default = false, Flag = "eggs_useremotes",
@@ -1675,8 +1706,15 @@ eggsLoopSub:AddButton({
             end
         else
             local ok, gained = DeliverCarried()
-            Notify("Eggs", ok and ("geliefert (+" .. ShortNumber(gained or 0) .. " $)") or ("Lieferung: " .. tostring(gained)),
-                ok and "Success" or "Error")
+            local txt
+            if ok then
+                txt = (tonumber(gained) or 0) > 0
+                    and ("geliefert (+" .. ShortNumber(gained) .. " $)")
+                    or "geliefert (Cash wird nachgebucht)"
+            else
+                txt = "Lieferung: " .. tostring(gained)
+            end
+            Notify("Eggs", txt, ok and "Success" or "Error")
         end
     end)
 })
