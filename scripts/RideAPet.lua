@@ -108,7 +108,7 @@ local S = {
     hatchDelay = 1.0,
     maxEggTravel = 0,               -- unused: no distance limit any more (instant TP)
     volcanicLairPath = true,        -- Volcanic Eggs: enter the lair through its door first
-    lairSettle = 1.0,               -- how long the server may take to see us inside the lair
+    lairSettle = 0.8,               -- how long the server may take to see us inside the lair
     pickupRetries = 8,              -- attempts per egg (server position lag)
     deliverDelay = 0,               -- pause after the pickup before heading home (0 = instant)
     useRemotes = true,              -- hard wired: EggPickup/EggArrivalClaim are always fired directly
@@ -457,7 +457,7 @@ end
 local function EnterLair()
     if ServerSeesInsideLair() then return true end
     local door = LairDoor()
-    for _ = 1, 5 do
+    for _ = 1, 3 do
         if HUB.dead then return false end
         if door then
             local look = door.CFrame.LookVector
