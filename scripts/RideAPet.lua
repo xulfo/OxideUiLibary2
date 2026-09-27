@@ -9,13 +9,13 @@ do
     local prev = _G.ArcRideAPet
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
-local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.7" }
+local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.8" }
 _G.ArcRideAPet = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
 
 local Window = Library:CreateWindow({
-    Name = "Arc HUB | Reite ein Haustier",
+    Name = "Arc HUB | Ride a Pet",
     LoadingAnimation = true,
     LoadingText = "Arc",
     LoadingDuration = 2.0,
@@ -250,8 +250,8 @@ end
 -- Kurze Zahl fürs UI (37,4 Mrd)
 local function ShortNumber(n)
     n = tonumber(n) or 0
-    if n >= 1e9 then return string.format("%.2f Mrd", n / 1e9) end
-    if n >= 1e6 then return string.format("%.1f Mio", n / 1e6) end
+    if n >= 1e9 then return string.format("%.2f B", n / 1e9) end
+    if n >= 1e6 then return string.format("%.1f M", n / 1e6) end
     if n >= 1e3 then return string.format("%.0f k", n / 1e3) end
     return tostring(math.floor(n))
 end
@@ -274,7 +274,7 @@ local function FirePrompt(prompt)
     lastHold.duration = tonumber(prompt.HoldDuration) or 0
     lastHold.action = tostring(prompt.ActionText or "")
     local ok = pcall(fireproximityprompt, prompt)
-    lastHold.method = ok and "Proximity-Prompt" or "Prompt-Trigger fehlgeschlagen"
+    lastHold.method = ok and "Proximity prompt" or "prompt trigger failed"
     return ok
 end
 
@@ -460,8 +460,8 @@ end
 --   ProximityPrompt wird nur zusätzlich gefeuert, wenn "Prompt mitfeuern" an ist
 --   (standardmässig aus, denn dessen Hold-Dauer kostet genau die Zeit, die wir wegwollen).
 local function CollectEgg(egg, tries)
-    if not egg or HUB.dead then return false, "kein Ziel" end
-    if #CarriedEggs() > 0 then return false, "Korb voll" end
+    if not egg or HUB.dead then return false, "no target" end
+    if #CarriedEggs() > 0 then return false, "carry full" end
     local before = #CarriedEggs()
     lastPickup = { mode = nil, reason = nil, name = egg.name, hold = nil, method = nil }
     local function WaitBasket(seconds)
@@ -493,7 +493,7 @@ local function CollectEgg(egg, tries)
     for _ = 1, tonumber(tries) or S.pickupRetries or 8 do
         if HUB.dead then return false, "unload" end
         if #CarriedEggs() > before then return true end
-        if not egg.record.Parent then return false, "Ei weg" end
+        if not egg.record.Parent then return false, "egg gone" end
         -- 1.) harter TP direkt aufs Ei (10 studs über der Oberkante)
         local rendered = RenderedEggNear(egg.pos)
         local prompt = rendered and rendered.prompt
@@ -515,19 +515,19 @@ local function CollectEgg(egg, tries)
         if WaitBasket(0.18) then return true end
         -- Korb voll -> nicht weiter hämmern
         if lastPickup.mode == "BasketFull" or (lastPickup.reason or ""):find("basket") then
-            return false, "Korb voll"
+            return false, "carry full"
         end
     end
     if #CarriedEggs() > before then return true end
-    return false, tostring(lastPickup.reason or lastPickup.mode or "keine Antwort")
+    return false, tostring(lastPickup.reason or lastPickup.mode or "no response")
 end
 
 -- Liefern: in die eigene Baseplate -> der Spiel-Client claimt selbst (Cash)
 local function DeliverCarried()
-    if #CarriedEggs() == 0 then return false, "Korb leer" end
+    if #CarriedEggs() == 0 then return false, "carry empty" end
     local plot = OwnPlot()
     local base = plot and plot:FindFirstChild("Baseplate")
-    if not base then return false, "kein Plot" end
+    if not base then return false, "no plot" end
     local cashBefore = PlayerCash()
     -- Heimreise: 10 studs über der Baseplate (genau wie im Referenz-Script)
     TravelToCFrame(PartTopCFrame(base) or CFrame.new(base.Position + Vector3.new(0, 6, 0)))
@@ -550,7 +550,7 @@ local function DeliverCarried()
             if #CarriedEggs() == 0 then break end
         end
     end
-    if #CarriedEggs() > 0 then return false, "Lieferung haengt" end
+    if #CarriedEggs() > 0 then return false, "delivery stuck" end
     S.stats.delivered = S.stats.delivered + 1
     -- Cash-Auswertung NICHT abwarten (sonst kostet jede Lieferung Extra-Zeit):
     -- kurz schauen, den Rest asynchron nachtragen.
@@ -631,9 +631,9 @@ end
 local function PlantBestEgg(minLuck)
     if HUB.dead then return false, "unload" end
     local remote = EggPlacedRemote()
-    if not remote then return false, "EggPlaced fehlt" end
+    if not remote then return false, "EggPlaced remote missing" end
     local nest, plot = FreeNest()
-    if not nest then return false, "kein freies Nest" end
+    if not nest then return false, "no free nest" end
     local pick
     for _, entry in ipairs(EggTools()) do
         if entry.luck >= (tonumber(minLuck) or 0) then
@@ -643,9 +643,9 @@ local function PlantBestEgg(minLuck)
             end
         end
     end
-    if not pick then return false, "kein Ei im Inventar" end
+    if not pick then return false, "no egg in inventory" end
     local humanoid = GetHumanoid()
-    if not humanoid then return false, "kein Humanoid" end
+    if not humanoid then return false, "no humanoid" end
     if HeldEggTool() ~= pick.tool then
         pcall(function() humanoid:UnequipTools() end)
         task.wait(0.1)
@@ -653,7 +653,7 @@ local function PlantBestEgg(minLuck)
         task.wait(0.35)
     end
     -- Ohne gehaltenes Ei-Tool darf NICHT gefeuert werden, sonst ist das Ei weg
-    if not HeldEggTool() then return false, "Ei nicht in der Hand" end
+    if not HeldEggTool() then return false, "egg not equipped" end
     local eggsFolder = plot and PlotEggs(plot)
     local before = eggsFolder and #eggsFolder:GetChildren() or 0
     local pos = NestPosition(nest, plot)
@@ -661,12 +661,12 @@ local function PlantBestEgg(minLuck)
         TravelTo(pos, 4)
         task.wait(0.25)
     end
-    if nest:GetAttribute("Occupied") == true then return false, "Nest schon besetzt" end
+    if nest:GetAttribute("Occupied") == true then return false, "nest already taken" end
     if LP:GetAttribute("NoNest") == true then
         -- Variante ohne Nest: irgendwo im eigenen Plot
         local base = plot and plot:FindFirstChild("Baseplate")
         local plantPos = base and base.Position or pos
-        if not plantPos then return false, "keine Position" end
+        if not plantPos then return false, "no position" end
         pcall(function() remote:FireServer({ PlantPosition = plantPos }) end)
     else
         pcall(function() remote:FireServer({ NestId = nest.Name }) end)
@@ -684,7 +684,7 @@ local function PlantBestEgg(minLuck)
         S.stats.planted = S.stats.planted + 1
         return true, pick.name
     end
-    return false, "Place abgelehnt"
+    return false, "place refused"
 end
 
 -- Wachstumsrestzeit eines Plot-Eis (nutzt die Spielmodule, Fallback: Serverzeit)
@@ -721,9 +721,9 @@ local function HatchEgg(egg)
     end
     -- Kein Prompt da: Hatch-Remote direkt feuern
     local key = egg:GetAttribute("EggKey")
-    if not key then return false, "kein EggKey" end
+    if not key then return false, "no egg key" end
     local remote = Remote("Hatch")
-    if not remote then return false, "Hatch fehlt" end
+    if not remote then return false, "hatch remote missing" end
     if pp then
         TravelTo(pp.Position, 4)
         task.wait(0.2)
@@ -848,7 +848,7 @@ end
 -- Pets füttern (Futter-Tool ausrüsten + Feed-Prompt)
 local function FeedPets()
     local foods = FoodTools()
-    if #foods == 0 then return false, "kein Futter" end
+    if #foods == 0 then return false, "no food" end
     local humanoid = GetHumanoid()
     local food = foods[1]
     if humanoid then pcall(function() humanoid:EquipTool(food) end) end
@@ -951,8 +951,8 @@ end
 
 local function TryRebirth()
     local cap = (RebirthData and RebirthData.Cap) or 6
-    if (tonumber(PlayerStat("Rebirths")) or 0) >= cap then return false, "Cap erreicht" end
-    if PlayerCash() < RebirthCost() then return false, "zu wenig Cash" end
+    if (tonumber(PlayerStat("Rebirths")) or 0) >= cap then return false, "cap reached" end
+    if PlayerCash() < RebirthCost() then return false, "not enough cash" end
     local remote = Remote("Rebirth")
     if not remote then return false end
     pcall(function() remote:FireServer() end)
@@ -1033,7 +1033,7 @@ end
 -- Kauft Luck-Upgrades: mode = "Max" oder "1 Upgrade", solange die Reserve bleibt
 local function BuyHatchUpgrades(mode, force)
     local remote = UpgradeRemote()
-    if not remote then return false, "Upgrades-Remote fehlt" end
+    if not remote then return false, "upgrades remote missing" end
     local cash = PlayerCash()
     local price = NextHatchUpgradePrice()
     if not force and (cash - price) < (S.upgradeReserve or 0) then
@@ -1411,14 +1411,14 @@ end
 -- ==============================================================================
 local function TeleportToOwnPlot()
     local plot = OwnPlot()
-    if not plot then return Notify("Arc HUB", "Kein Plot geladen", "Error") end
+    if not plot then return Notify("Arc HUB", "No plot loaded", "Error") end
     local base = plot:FindFirstChild("Baseplate") or plot:FindFirstChild("Baseplate", true)
     if base then TravelToCFrame(PartTopCFrame(base)) end
 end
 local function TeleportToStall(name)
     local stalls = Workspace:FindFirstChild("Stalls")
     local stall = stalls and stalls:FindFirstChild(name)
-    if not stall then return Notify("Arc HUB", "Stall nicht gefunden", "Error") end
+    if not stall then return Notify("Arc HUB", "Stall not found", "Error") end
     local pivot = stall:IsA("Model") and stall:GetPivot().Position or stall.Position
     TravelTo(pivot, 6)
 end
@@ -1442,7 +1442,7 @@ local function EggLoopStep()
             HUB.lastPlacedPos = hrpNow.Position
             if (os.clock() - (HUB.manualWarnAt or 0)) > 8 then
                 HUB.manualWarnAt = os.clock()
-                Notify("Auto Farm", "Pause - der Charakter wurde von aussen bewegt", "Info", 3)
+                Notify("Auto Farm", "Paused - the character was moved externally", "Info", 3)
             end
         end
     end
@@ -1483,7 +1483,7 @@ local function EggLoopStep()
             if S.autoHatch then HatchReadyEggs() end
         end
     end)
-    if not ok then pcall(Notify, "Arc HUB", "Egg-Loop: " .. tostring(err), "Error", 3) end
+    if not ok then pcall(Notify, "Arc HUB", "Egg loop: " .. tostring(err), "Error", 3) end
     S.busy = false
     return did
 end
@@ -1498,7 +1498,7 @@ local function ProgressLoopStep()
     if S.autoUnlockNests then UnlockNests() end
     if S.autoRebirth then
         local ok, why = TryRebirth()
-        if not ok and why == "zu wenig Cash" then
+        if not ok and why == "not enough cash" then
             -- still
         end
     end
@@ -1572,22 +1572,22 @@ local setTab  = Window:AddTab("Settings")
 -- ---------------------------------------------------------------- Auto Farm
 local farmSub = mainTab:AddSubTab("Smart All")
 farmSub:AddButton({
-    Name = "Smart All AN", Primary = true,
+    Name = "Smart All ON", Primary = true,
     Callback = safeCallback(function()
         S.eggLoop = true; S.petLoop = true; S.progressLoop = true
         S.autoDeliver = true; S.autoHatch = true
         S.autoCollectPets = true; S.placeBestPets = true; S.autoPlacePets = true
         S.autoUnlockNests = true; S.autoClaimIndex = true; S.autoClaimOffline = true
         StartLoops()
-        Notify("Smart All", "alles an", "Success")
+        Notify("Smart All", "all on", "Success")
     end)
 })
 farmSub:AddButton({
-    Name = "Alles AUS",
+    Name = "All Off",
     Callback = safeCallback(function()
         S.eggLoop = false; S.petLoop = false; S.progressLoop = false
         S.autoPlacePets = false
-        Notify("Smart All", "alles aus", "Info")
+        Notify("Smart All", "all off", "Info")
     end)
 })
 farmSub:AddDivider()
@@ -1609,10 +1609,10 @@ statusSub:AddDivider()
 local function StatusParagraph()
     local hold = tonumber(lastHold.duration) or 0
     return string.format(
-        "Eier %d | geliefert %d (+%s $) | gepflanzt %d | gehatcht %d | Collects %d | Nester %d | Rebirth %d | Luck x%.1f",
+        "Eggs %d | delivered %d (+%s $) | planted %d | hatched %d | collects %d | nests %d | rebirth %d | luck x%.1f",
         S.stats.eggs, S.stats.delivered, ShortNumber(S.stats.cash), S.stats.planted, S.stats.hatched,
         S.stats.collected, S.stats.nests, S.stats.rebirths, HatchLuckMultiplier())
-        .. string.format("\nPickup: %s | echter Prompt, Hold %.2fs | letzter Fehler: %s",
+        .. string.format("\nPickup: %s | real prompt, hold %.2fs | last error: %s",
             tostring(lastHold.method or "-"), hold, S.lastEggError and tostring(S.lastEggError) or "-")
 end
 local statusLabel = statusSub:AddParagraph({ Title = "Stats", Text = StatusParagraph() })
@@ -1630,11 +1630,11 @@ eggsLoopSub:AddToggle({
     Callback = safeCallback(function(v) S.eggLoop = v StartLoops() end)
 })
 eggsLoopSub:AddDropdown({
-    Name = "Egg Priorität", Options = { "Best Value", "Fast Cycle", "Nearest" }, Default = "Best Value", Flag = "eggs_prio",
+    Name = "Egg Priority", Options = { "Best Value", "Fast Cycle", "Nearest" }, Default = "Best Value", Flag = "eggs_prio",
     Callback = safeCallback(function(v) S.eggPriority = v end)
 })
 eggsLoopSub:AddMultiDropdown({
-    Name = "Raritäten (leer = alle)", Options = { "Common", "Rare", "Epic", "Legendary", "Mythic", "Ethereal", "Divine", "Volcanic" },
+    Name = "Rarities (empty = all)", Options = { "Common", "Rare", "Epic", "Legendary", "Mythic", "Ethereal", "Divine", "Volcanic" },
     Default = {}, Flag = "eggs_rarities",
     Callback = safeCallback(function(list)
         S.eggRarities = {}
@@ -1642,31 +1642,31 @@ eggsLoopSub:AddMultiDropdown({
     end)
 })
 eggsLoopSub:AddSlider({
-    Name = "Loop-Zusatzpause (0 = sofort)", Min = 0, Max = 3, Default = 0, Suffix = "s", Flag = "eggs_delay",
+    Name = "Loop extra delay (0 = instant)", Min = 0, Max = 3, Default = 0, Suffix = "s", Flag = "eggs_delay",
     Callback = safeCallback(function(v) S.eggLoopDelay = tonumber(v) or 0 end)
 })
 eggsLoopSub:AddDivider()
 eggsLoopSub:AddToggle({
-    Name = "Auto Liefern (Cash)", Default = true, Flag = "eggs_deliver",
+    Name = "Auto Deliver (Cash)", Default = true, Flag = "eggs_deliver",
     Callback = safeCallback(function(v) S.autoDeliver = v end)
 })
 eggsLoopSub:AddToggle({
-    Name = "Auto Pflanzen (Inventar)", Default = false, Flag = "eggs_plant",
+    Name = "Auto Plant (Inventory)", Default = false, Flag = "eggs_plant",
     Callback = safeCallback(function(v)
         S.autoPlant = v
         if v then StartLoops() end
     end)
 })
 eggsLoopSub:AddSlider({
-    Name = "Pickup-Versuche", Min = 2, Max = 20, Default = 8, Flag = "eggs_pickuptries",
+    Name = "Pickup Attempts", Min = 2, Max = 20, Default = 8, Flag = "eggs_pickuptries",
     Callback = safeCallback(function(v) S.pickupRetries = math.floor(tonumber(v) or 8) end)
 })
 eggsLoopSub:AddSlider({
-    Name = "Pflanzen/Hatch alle", Min = 0, Max = 30, Default = 3, Suffix = "s", Flag = "eggs_sideinterval",
+    Name = "Plant/Hatch every", Min = 0, Max = 30, Default = 3, Suffix = "s", Flag = "eggs_sideinterval",
     Callback = safeCallback(function(v) S.sideInterval = tonumber(v) or 3 end)
 })
 eggsLoopSub:AddToggle({
-    Name = "Prompt mitfeuern (Hold-Zeit)", Default = false, Flag = "eggs_useprompt",
+    Name = "Also fire real prompt (hold time)", Default = false, Flag = "eggs_useprompt",
     Callback = safeCallback(function(v) S.usePrompt = v end)
 })
 eggsLoopSub:AddToggle({
@@ -1674,7 +1674,7 @@ eggsLoopSub:AddToggle({
     Callback = safeCallback(function(v) S.autoHatch = v end)
 })
 eggsLoopSub:AddToggle({
-    Name = "Noclip beim Farmen", Default = true, Flag = "eggs_farmnoclip",
+    Name = "Noclip while farming", Default = true, Flag = "eggs_farmnoclip",
     Callback = safeCallback(function(v)
         S.farmNoclip = v
         if not v then SetFarmNoclip(false) end
@@ -1685,65 +1685,65 @@ eggsLoopSub:AddSlider({
     Callback = safeCallback(function(v) S.hatchDelay = tonumber(v) or 1 end)
 })
 eggsLoopSub:AddButton({
-    Name = "1 Ei farmen", Primary = true,
+    Name = "Farm 1 egg", Primary = true,
     Callback = safeCallback(function()
         if #CarriedEggs() == 0 then
             local t = PickTargetEgg()
-            if not t then return Notify("Eggs", "kein Ei gefunden", "Info") end
+            if not t then return Notify("Eggs", "no egg found", "Info") end
             local got, why = CollectEgg(t, 10)
             if got then
-                Notify("Eggs", t.name .. " aufgenommen", "Success")
+                Notify("Eggs", t.name .. " picked up", "Success")
             else
-                Notify("Eggs", "Aufnahme abgelehnt: " .. tostring(why), "Error", 4)
+                Notify("Eggs", "Pickup refused: " .. tostring(why), "Error", 4)
             end
         else
             local ok, gained = DeliverCarried()
             local txt
             if ok then
                 txt = (tonumber(gained) or 0) > 0
-                    and ("geliefert (+" .. ShortNumber(gained) .. " $)")
-                    or "geliefert (Cash wird nachgebucht)"
+                    and ("delivered (+" .. ShortNumber(gained) .. " $)")
+                    or "delivered (cash will be credited)"
             else
-                txt = "Lieferung: " .. tostring(gained)
+                txt = "Delivery: " .. tostring(gained)
             end
             Notify("Eggs", txt, ok and "Success" or "Error")
         end
     end)
 })
 eggsLoopSub:AddButton({
-    Name = "Reife Eier hatchen",
+    Name = "Hatch ready eggs",
     Callback = safeCallback(function()
         local n = HatchReadyEggs()
-        Notify("Eggs", n .. " Ei(er) gehatcht", "Success")
+        Notify("Eggs", n .. " egg(s) hatched", "Success")
     end)
 })
 eggsLoopSub:AddButton({
-    Name = "Plot-Eier checken",
+    Name = "Check plot eggs",
     Callback = safeCallback(function()
         local plot = OwnPlot()
         local eggs = PlotEggs(plot)
-        if not eggs then return Notify("Eggs", "Kein Plot", "Error") end
+        if not eggs then return Notify("Eggs", "No plot", "Error") end
         local lines = {}
         for _, e in ipairs(eggs:GetChildren()) do
             local remaining = GrowthRemaining(e)
             lines[#lines + 1] = string.format("%s - %ds", e.Name, math.floor(remaining))
         end
-        Notify("Plot-Eier", #lines > 0 and table.concat(lines, " | ") or "leer", "Info", 5)
+        Notify("Plot eggs", #lines > 0 and table.concat(lines, " | ") or "empty", "Info", 5)
     end)
 })
 
 local eggsInfoSub = eggsLoopSub
 eggsInfoSub:AddButton({
-    Name = "Bestes Ei pflanzen",
+    Name = "Plant best egg",
     Callback = safeCallback(function()
         local ok, res = PlantBestEgg(S.plantMinLuck)
-        Notify("Pflanzen", ok and ("gepflanzt: " .. tostring(res)) or tostring(res), ok and "Success" or "Error")
+        Notify("Plant", ok and ("planted: " .. tostring(res)) or tostring(res), ok and "Success" or "Error")
     end)
 })
 eggsInfoSub:AddButton({
-    Name = "Eier zählen",
+    Name = "Count eggs",
     Callback = safeCallback(function()
-        Notify("Eier", string.format("%d Feld-Eier | %d Ei-Tools im Inventar", #EggRecords(), #EggTools()), "Info", 4)
+        Notify("Eggs", string.format("%d field eggs | %d egg tools in inventory", #EggRecords(), #EggTools()), "Info", 4)
     end)
 })
 
@@ -1754,42 +1754,42 @@ petsLoopSub:AddToggle({
     Callback = safeCallback(function(v) S.petLoop = v StartLoops() end)
 })
 petsLoopSub:AddToggle({
-    Name = "Earnings sammeln", Default = true, Flag = "pets_collect",
+    Name = "Collect earnings", Default = true, Flag = "pets_collect",
     Callback = safeCallback(function(v) S.autoCollectPets = v end)
 })
 petsLoopSub:AddToggle({
-    Name = "Auto Pets setzen", Default = false, Flag = "pets_place",
+    Name = "Auto place pets", Default = false, Flag = "pets_place",
     Callback = safeCallback(function(v) S.autoPlacePets = v end)
 })
 petsLoopSub:AddToggle({
-    Name = "Auto Füttern", Default = false, Flag = "pets_feed",
+    Name = "Auto feed", Default = false, Flag = "pets_feed",
     Callback = safeCallback(function(v) S.autoFeedPets = v end)
 })
 petsLoopSub:AddButton({
-    Name = "Earnings sammeln", Primary = true,
+    Name = "Collect earnings", Primary = true,
     Callback = safeCallback(function()
         local n = CollectPetEarnings()
-        Notify("Pets", n .. " Pet(s) abgeholt", "Success")
+        Notify("Pets", n .. " pet(s) collected", "Success")
     end)
 })
 petsLoopSub:AddButton({
-    Name = "Beste Pets setzen",
+    Name = "Place best pets",
     Callback = safeCallback(function()
         local ok = PlaceBestPets()
-        Notify("Pets", ok and "gesetzt" or "kein freier Slot", ok and "Success" or "Info")
+        Notify("Pets", ok and "placed" or "no free slot", ok and "Success" or "Info")
     end)
 })
 petsLoopSub:AddButton({
-    Name = "Füttern",
+    Name = "Feed",
     Callback = safeCallback(function()
         local ok, res = FeedPets()
-        Notify("Pets", ok and ("Gefüttert: " .. tostring(res)) or tostring(res), ok and "Success" or "Error")
+        Notify("Pets", ok and ("Fed: " .. tostring(res)) or tostring(res), ok and "Success" or "Error")
     end)
 })
 
 local petsInfoSub = petsLoopSub
 petsInfoSub:AddButton({
-    Name = "Gehaltene Pets",
+    Name = "Held pets",
     Callback = safeCallback(function()
         local pets = HeldPets()
         table.sort(pets, function(a, b) return (a:GetAttribute("Weight") or 0) > (b:GetAttribute("Weight") or 0) end)
@@ -1798,7 +1798,7 @@ petsInfoSub:AddButton({
             if i > 6 then break end
             lines[#lines + 1] = string.format("%s (%.0f)", tostring(p:GetAttribute("PetName") or p.Name), tonumber(p:GetAttribute("Weight")) or 0)
         end
-        Notify("Pets", #lines > 0 and table.concat(lines, " | ") or "keine", "Info", 5)
+        Notify("Pets", #lines > 0 and table.concat(lines, " | ") or "none", "Info", 5)
     end)
 })
 petsInfoSub:AddButton({
@@ -1810,7 +1810,7 @@ petsInfoSub:AddButton({
             lines[#lines + 1] = string.format("%s (%.0f, Age %s)", tostring(p:GetAttribute("PetName") or p.Name),
                 tonumber(p:GetAttribute("Weight")) or 0, tostring(p:GetAttribute("Age")))
         end
-        Notify("Plot-Pets", #lines > 0 and table.concat(lines, " | ") or "keine", "Info", 5)
+        Notify("Plot pets", #lines > 0 and table.concat(lines, " | ") or "none", "Info", 5)
     end)
 })
 
@@ -1821,7 +1821,7 @@ progAutoSub:AddToggle({
     Callback = safeCallback(function(v) S.progressLoop = v StartLoops() end)
 })
 progAutoSub:AddToggle({
-    Name = "Nester kaufen", Default = false, Flag = "prog_nests",
+    Name = "Buy nests", Default = false, Flag = "prog_nests",
     Callback = safeCallback(function(v) S.autoUnlockNests = v end)
 })
 progAutoSub:AddToggle({
@@ -1833,11 +1833,11 @@ progAutoSub:AddToggle({
     Callback = safeCallback(function(v) S.autoClaimIndex = v end)
 })
 progAutoSub:AddToggle({
-    Name = "Auto Offline-Cash", Default = false, Flag = "prog_offline",
+    Name = "Auto offline cash", Default = false, Flag = "prog_offline",
     Callback = safeCallback(function(v) S.autoClaimOffline = v end)
 })
 progAutoSub:AddToggle({
-    Name = "Auto Gruppen-Reward", Default = false, Flag = "prog_group",
+    Name = "Auto group reward", Default = false, Flag = "prog_group",
     Callback = safeCallback(function(v) S.autoClaimGroup = v end)
 })
 progAutoSub:AddToggle({
@@ -1851,24 +1851,24 @@ progAutoSub:AddToggle({
 
 local progManSub = progAutoSub
 progManSub:AddButton({
-    Name = "Luck kaufen AN/AUS", Primary = true,
+    Name = "Buy luck ON/OFF", Primary = true,
     Callback = safeCallback(function()
         S.luckBuying = not S.luckBuying
         Notify("Luck",
-            S.luckBuying and ("an | " .. tostring(S.luckBuyMode) .. " alle " .. tostring(S.luckBuyDelay) .. "s") or "aus",
+            S.luckBuying and ("on | " .. tostring(S.luckBuyMode) .. " every " .. tostring(S.luckBuyDelay) .. "s") or "off",
             S.luckBuying and "Success" or "Info")
     end)
 })
 progManSub:AddSlider({
-    Name = "Kauf-Delay", Min = 0.2, Max = 30, Default = 2, Suffix = "s", Flag = "luck_delay",
+    Name = "Buy delay", Min = 0.2, Max = 30, Default = 2, Suffix = "s", Flag = "luck_delay",
     Callback = safeCallback(function(v) S.luckBuyDelay = tonumber(v) or 2 end)
 })
 progManSub:AddDropdown({
-    Name = "Kauf-Modus", Options = { "1 Upgrade", "Max" }, Default = "1 Upgrade", Flag = "luck_mode",
+    Name = "Buy mode", Options = { "1 Upgrade", "Max" }, Default = "1 Upgrade", Flag = "luck_mode",
     Callback = safeCallback(function(v) S.luckBuyMode = tostring(v) end)
 })
 progManSub:AddSlider({
-    Name = "Cash behalten", Min = 0, Max = 5000000, Default = 100000, Suffix = " $", Flag = "luck_reserve",
+    Name = "Keep cash", Min = 0, Max = 5000000, Default = 100000, Suffix = " $", Flag = "luck_reserve",
     Callback = safeCallback(function(v) S.upgradeReserve = tonumber(v) or 100000 end)
 })
 
@@ -1885,7 +1885,7 @@ local function ProgressStatusText()
             if n:GetAttribute("Unlocked") == true then open = open + 1 end
         end
     end
-    return string.format("Luck Lv%d (x%.1f) | naechster %s $ | bezahlbar %d | Nester %d/%d | Rebirths %s (%s $)",
+    return string.format("Luck Lv%d (x%.1f) | next %s $ | affordable %d | nests %d/%d | rebirths %s (%s $)",
         HatchUpgradeLevel(), HatchLuckMultiplier(), tostring(NextHatchUpgradePrice()), count,
         open, total, tostring(PlayerStat("Rebirths")), tostring(RebirthCost()))
 end
@@ -1899,16 +1899,16 @@ end)
 -- ---------------------------------------------------------------- Shops
 local shopSub = shopTab:AddSubTab("Shop")
 shopSub:AddToggle({
-    Name = "Server-Autobuy", Default = false, Flag = "shop_autobuy",
+    Name = "Server autobuy", Default = false, Flag = "shop_autobuy",
     Callback = safeCallback(function(v)
         S.autoBuyFood = v
         local remote = Remote("Autobuy")
         if remote then pcall(function() remote:FireServer(v) end) end
-        Notify("Shop", v and "Autobuy an" or "Autobuy aus", "Info")
+        Notify("Shop", v and "autobuy on" or "autobuy off", "Info")
     end)
 })
 shopSub:AddToggle({
-    Name = "Auto-Restock", Default = false, Flag = "shop_restock",
+    Name = "Auto restock", Default = false, Flag = "shop_restock",
     Callback = safeCallback(function(v) S.autoRestock = v end)
 })
 shopSub:AddButton({
@@ -1918,7 +1918,7 @@ shopSub:AddButton({
         local main = pg and pg:FindFirstChild("Main")
         local oldShop = main and main:FindFirstChild("OldShop")
         local restock = oldShop and oldShop:FindFirstChild("Header") and oldShop.Header:FindFirstChild("Restock")
-        if not restock then return Notify("Shop", "Restock-Button fehlt", "Error") end
+        if not restock then return Notify("Shop", "Restock button not found", "Error") end
         local ok, conns = pcall(getconnections, restock.Activated)
         local clicked = false
         if ok then
@@ -1926,14 +1926,14 @@ shopSub:AddButton({
                 if type(c.Function) == "function" then pcall(c.Function) clicked = true end
             end
         end
-        Notify("Shop", clicked and "Restock ausgelöst" or "Kein Handler am Button", clicked and "Success" or "Info")
+        Notify("Shop", clicked and "Restock triggered" or "No handler on the button", clicked and "Success" or "Info")
     end)
 })
 shopSub:AddDivider()
-shopSub:AddButton({ Name = "Futter-Stand", Callback = safeCallback(function() TeleportToStall("Food") end) })
-shopSub:AddButton({ Name = "Gear-Stand", Callback = safeCallback(function() TeleportToStall("Gears") end) })
-shopSub:AddButton({ Name = "Verkaufs-Stand", Callback = safeCallback(function() TeleportToStall("Sell") end) })
-shopSub:AddButton({ Name = "Egg-Tracker", Callback = safeCallback(function() TeleportToStall("EggTracker") end) })
+shopSub:AddButton({ Name = "Food stall", Callback = safeCallback(function() TeleportToStall("Food") end) })
+shopSub:AddButton({ Name = "Gear stall", Callback = safeCallback(function() TeleportToStall("Gears") end) })
+shopSub:AddButton({ Name = "Sell stall", Callback = safeCallback(function() TeleportToStall("Sell") end) })
+shopSub:AddButton({ Name = "Egg tracker", Callback = safeCallback(function() TeleportToStall("EggTracker") end) })
 
 -- ---------------------------------------------------------------- ESP
 local espSub = espTab:AddSubTab("ESP")
@@ -1942,7 +1942,7 @@ espSub:AddToggle({
     Callback = safeCallback(function(v) S.eggEsp = v RefreshESP() end)
 })
 espSub:AddToggle({
-    Name = "Pet ESP (eigene grün)", Default = false, Flag = "esp_pet",
+    Name = "Pet ESP (own green)", Default = false, Flag = "esp_pet",
     Callback = safeCallback(function(v) S.petEsp = v RefreshESP() end)
 })
 espSub:AddToggle({
@@ -1950,7 +1950,7 @@ espSub:AddToggle({
     Callback = safeCallback(function(v) S.playerEsp = v RefreshESP() end)
 })
 espSub:AddMultiDropdown({
-    Name = "Raritätsfilter", Options = { "Common", "Rare", "Epic", "Legendary", "Mythic", "Ethereal", "Divine", "Volcanic" },
+    Name = "Rarity filter", Options = { "Common", "Rare", "Epic", "Legendary", "Mythic", "Ethereal", "Divine", "Volcanic" },
     Default = {}, Flag = "esp_rarities",
     Callback = safeCallback(function(list)
         S.espRarities = {}
@@ -1959,18 +1959,18 @@ espSub:AddMultiDropdown({
     end)
 })
 espSub:AddToggle({
-    Name = "Eier: Name + Distanz", Default = true, Flag = "esp_egglabels",
+    Name = "Eggs: name + distance", Default = true, Flag = "esp_egglabels",
     Callback = safeCallback(function(v) S.espEggLabels = v RefreshESP() end)
 })
 espSub:AddSlider({
-    Name = "Eier: Marker bis (0 = alle)", Min = 0, Max = 8000, Default = 0, Suffix = " studs", Flag = "esp_eggmax",
+    Name = "Eggs: markers up to (0 = all)", Min = 0, Max = 8000, Default = 0, Suffix = " studs", Flag = "esp_eggmax",
     Callback = safeCallback(function(v) S.espEggMaxDist = tonumber(v) or 0 RefreshESP() end)
 })
 espSub:AddButton({
-    Name = "Nächstes Ei anlaufen",
+    Name = "Travel to next egg",
     Callback = safeCallback(function()
         local t = PickTargetEgg()
-        if t then TravelToEgg(t) Notify("Egg ESP", t.name, "Success") else Notify("Egg ESP", "kein Ei", "Info") end
+        if t then TravelToEgg(t) Notify("Egg ESP", t.name, "Success") else Notify("Egg ESP", "no egg", "Info") end
     end)
 })
 
@@ -1978,21 +1978,68 @@ espSub:AddButton({
 -- FPS-Modus/Anti-AFK/Anti-Kick/Auto-Rejoin) - das war die Fehlerquelle.
 
 -- ---------------------------------------------------------------- Settings
+-- Language: the UI library detects the player's language at load and translates
+-- every label / button / notification from the English source text. "Auto"
+-- follows that detection, a name overrides it (saved with the config).
+local function LanguageList()
+    local list = (type(Library) == "table" and rawget(Library, "Languages")) or nil
+    local out = {}
+    if type(list) ~= "table" then return out end
+    for _, entry in ipairs(list) do
+        if type(entry) == "table" and type(entry.code) == "string" and type(entry.name) == "string" then
+            out[#out + 1] = entry
+        end
+    end
+    return out
+end
+local function LanguageNameForCode(code)
+    for _, entry in ipairs(LanguageList()) do
+        if entry.code == code then return entry.name end
+    end
+    return tostring(code or "?")
+end
+local function LanguageOptions()
+    local out = { "Auto" }
+    for _, entry in ipairs(LanguageList()) do
+        out[#out + 1] = entry.name
+    end
+    return out
+end
+local function ApplyLanguage(pick)
+    local languages = LanguageList()
+    if #languages == 0 or type(Library.SetLanguage) ~= "function" then
+        return Notify("Language", "UI library without language support", "Error")
+    end
+    local code
+    if pick ~= "Auto" then
+        for _, entry in ipairs(languages) do
+            if entry.name == pick then code = entry.code break end
+        end
+    end
+    local active = Library:SetLanguage(code) or code or "en"
+    Notify("Language", LanguageNameForCode(active), "Info")
+end
+
 local setSub = setTab:AddSubTab("Main")
+setSub:AddDropdown({
+    Name = "Language", Options = LanguageOptions(), Default = "Auto", Flag = "ui_lang",
+    Callback = safeCallback(function(v) ApplyLanguage(v) end)
+})
+setSub:AddDivider()
 setSub:AddButton({
-    Name = "Config speichern", Primary = true,
+    Name = "Save config", Primary = true,
     Callback = safeCallback(function()
-        if not HAS_CONFIG then return Notify("Config", "Library ohne Config-API", "Error") end
+        if not HAS_CONFIG then return Notify("Config", "Library has no config API", "Error") end
         Library:SaveConfig(CONFIG_NAME)
-        Notify("Config", "Gespeichert", "Success")
+        Notify("Config", "Saved", "Success")
     end)
 })
 setSub:AddButton({
-    Name = "Config laden",
+    Name = "Load config",
     Callback = safeCallback(function()
-        if not HAS_CONFIG then return Notify("Config", "Library ohne Config-API", "Error") end
+        if not HAS_CONFIG then return Notify("Config", "Library has no config API", "Error") end
         Library:LoadConfig(CONFIG_NAME)
-        Notify("Config", "Geladen", "Success")
+        Notify("Config", "Loaded", "Success")
     end)
 })
 setSub:AddButton({
@@ -2027,7 +2074,7 @@ function HUB.Unload()
     pcall(RestoreCollisions)
     pcall(function() Window:Destroy() end)
     _G.ArcRideAPet = nil
-    print("[Arc HUB] Reite ein Haustier unloaded.")
+    print("[Arc HUB] Ride a Pet unloaded.")
 end
 
 -- ==============================================================================
@@ -2051,6 +2098,6 @@ HUB.actions = {
     GrowthRemaining = GrowthRemaining,
 }
 StartLoops()
-Notify("Arc HUB", "Reite ein Haustier geladen", "Success", 3)
+Notify("Arc HUB", "Ride a Pet loaded", "Success", 3)
 
 return HUB
