@@ -9,7 +9,7 @@ do
     local prev = _G.ArcRideAPet
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
-local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.5" }
+local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.6" }
 _G.ArcRideAPet = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
@@ -106,7 +106,7 @@ local S = {
     plantMinLuck = 0,               -- nur Eier ab diesem Luck pflanzen
     autoHatch = true,
     hatchDelay = 1.0,
-    maxEggTravel = 0,               -- 0 = unbegrenzt
+    maxEggTravel = 0,               -- unbenutzt: kein Distanzlimit mehr (Instant-TP)
     pickupRetries = 8,              -- Versuche pro Ei (Server-Positions-Lag)
     deliverDelay = 0,               -- Pause nach dem Pickup, bevor es heim zur Basis geht (0 = sofort)
     useRemotes = true,              -- EggPickup/EggArrivalClaim direkt feuern = instant (keine Prompt-Hold-Zeit)
@@ -424,8 +424,14 @@ local function PickTargetEgg()
     for _, egg in ipairs(EggRecords()) do
         if RarityAllowed(egg.rarity) then
             local travel = ((egg.pos - origin) * Vector3.new(1, 0, 1)).Magnitude
-            if S.maxEggTravel <= 0 or travel <= S.maxEggTravel then
-                local claimable = Claimable(egg)
+            -- Kein Distanzlimit mehr: mit dem Instant-TP sind wir sofort am Ei. Das alte
+            -- Limit (gespeicherte 978 studs) liess nur noch nahe Common-Eier uebrig.
+            local maxTravel = 0
+            if maxTravel <= 0 or travel <= maxTravel then
+                -- "Claimbar" (gerendert + Prompt) nur bevorzugen, wenn wir den Prompt
+                -- wirklich nutzen. Mit dem Instant-Remote zaehlt der Wert allein - sonst
+                -- gewinnen immer die vielen Common-Eier, die gerade gerendert sind.
+                local claimable = ((not S.useRemotes) or S.usePrompt) and Claimable(egg) or false
                 local value = RarityRank(egg.rarity) * 1000 + egg.luck + egg.sell * 10
                 local score
                 if S.eggPriority == "Nearest" then
@@ -1639,10 +1645,6 @@ eggsLoopSub:AddMultiDropdown({
 eggsLoopSub:AddSlider({
     Name = "Loop-Zusatzpause (0 = sofort)", Min = 0, Max = 3, Default = 0, Suffix = "s", Flag = "eggs_delay",
     Callback = safeCallback(function(v) S.eggLoopDelay = tonumber(v) or 0 end)
-})
-eggsLoopSub:AddSlider({
-    Name = "Max. Distanz (0 = egal)", Min = 0, Max = 5000, Default = 0, Suffix = " studs", Flag = "eggs_travel",
-    Callback = safeCallback(function(v) S.maxEggTravel = tonumber(v) or 0 end)
 })
 eggsLoopSub:AddDivider()
 eggsLoopSub:AddToggle({
