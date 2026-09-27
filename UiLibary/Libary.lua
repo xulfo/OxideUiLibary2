@@ -40,13 +40,15 @@ local Lang = {
     status   = "default",
     registry = setmetatable({}, { __mode = "k" }),   -- [instance] = { prop, src }
     -- Keep in sync with the files in UiLibary/lang/ (a code without a
-    -- dictionary just falls back to English).
+    -- dictionary just falls back to English). `rev` is the cache buster for the
+    -- CDN: bump it whenever that dictionary changes, otherwise GitHub keeps
+    -- serving the old file for a few minutes.
     list     = {
         { code = "en",    name = "English" },
-        { code = "de",    name = "Deutsch" },
-        { code = "es",    name = "Español" },
-        { code = "fr",    name = "Français" },
-        { code = "pt-br", name = "Português (BR)" },
+        { code = "de",    name = "Deutsch",        rev = 2 },
+        { code = "es",    name = "Español",        rev = 2 },
+        { code = "fr",    name = "Français",       rev = 2 },
+        { code = "pt-br", name = "Português (BR)", rev = 2 },
     },
 }
 
@@ -106,6 +108,15 @@ local function langHttpGet(url)
     return nil
 end
 
+-- Cache buster per language (see Lang.list.rev) so an updated dictionary does
+-- not have to wait for GitHub's edge cache to expire.
+local function langRev(code)
+    for _, entry in ipairs(Lang.list) do
+        if entry.code == code then return entry.rev end
+    end
+    return nil
+end
+
 local function langLoad(code)
     local base = langBase(code)
     local cache = _G.ArcLanguageDictionaries
@@ -116,7 +127,10 @@ local function langLoad(code)
     for _, candidate in ipairs(tries) do
         local dict = cache[candidate]
         if dict == nil then
-            local body = langHttpGet(LANG_URL .. candidate .. ".json")
+            local url = LANG_URL .. candidate .. ".json"
+            local rev = langRev(candidate)
+            if rev then url = url .. "?r=" .. tostring(rev) end
+            local body = langHttpGet(url)
             if body then
                 local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
                 if ok and type(data) == "table" then
@@ -1355,7 +1369,7 @@ end
 -- LIBRARY
 -- ════════════════════════════════════════════════════════════════════════════
 local Library = {
-    Version       = "2.7",
+    Version       = "2.8",
     ChatFree      = true,      -- marker: this build has no hub chat (used by the loader to reject stale CDN copies)
     Themes        = THEMES,
     Icons         = ICONS,
