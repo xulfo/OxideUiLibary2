@@ -9,7 +9,7 @@ do
     local prev = _G.ArcRideAPet
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
-local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.0" }
+local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.5" }
 _G.ArcRideAPet = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
@@ -37,16 +37,10 @@ local RS               = game:GetService("ReplicatedStorage")
 local Workspace        = game:GetService("Workspace")
 local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Lighting         = game:GetService("Lighting")
-local VirtualUser      = game:GetService("VirtualUser")
-local TeleportService  = game:GetService("TeleportService")
 local TweenService     = game:GetService("TweenService")
 local CollectionService = game:GetService("CollectionService")
 
 local LP = Players.LocalPlayer
-local function GetCamera()
-    return Workspace.CurrentCamera or Workspace:FindFirstChildOfClass("Camera")
-end
 local function GetHRP()
     local char = LP.Character
     return char and char:FindFirstChild("HumanoidRootPart")
@@ -105,11 +99,16 @@ local S = {
     eggLoop = false,
     eggPriority = "Best Value",     -- Fast Cycle | Best Value | Nearest
     eggRarities = {},               -- leer = alle
-    eggLoopDelay = 0.35,
-    autoPlace = true,
+    eggLoopDelay = 0.15,
+    autoDeliver = true,             -- eingesammeltes Ei heim liefern (Cash)
+    autoPlant = false,              -- Inventar-Eier in freie Nester pflanzen
+    plantMinLuck = 0,               -- nur Eier ab diesem Luck pflanzen
     autoHatch = true,
     hatchDelay = 1.0,
     maxEggTravel = 0,               -- 0 = unbegrenzt
+    pickupRetries = 8,              -- Versuche pro Ei (Server-Positions-Lag)
+    deliverDelay = 0.15,            -- Pause nach dem Pickup, bevor es heim zur Basis geht
+    useRemotes = false,             -- false = NUR echter Spiel-Weg (Prompt), keine synthetischen Remotes
     -- Pet loop
     petLoop = false,
     autoCollectPets = true,
@@ -134,32 +133,21 @@ local S = {
     petEsp = false,
     playerEsp = false,
     espRarities = {},
-    -- Player
-    speedEnabled = false,
-    speedValue = 16,
-    jumpEnabled = false,
-    jumpValue = 50,
-    flyEnabled = false,
-    flySpeed = 60,
+    espEggLabels = true,        -- Name/Rarität/Distanz am Marker anzeigen
+    espEggMaxDist = 0,          -- 0 = alle Eier markieren
+    -- Player (nur noch Farm-Noclip - der Player-Tab ist komplett entfernt)
     noclip = false,
     farmNoclip = true,          -- Noclip automatisch während des Egg-Farms
     farmNoclipActive = false,
+    -- Luck-Upgrades (Progress-Tab)
     luckBuying = false,         -- Button "Luck kaufen"
     luckBuyDelay = 2,           -- Delay zwischen den Käufen
     luckBuyMode = "1 Upgrade",  -- "1 Upgrade" | "Max"
     upgradeReserve = 100000,    -- Cash, das für Upgrades nicht angetastet wird
-    gravityEnabled = false,
-    gravityValue = 196.2,
-    fovEnabled = false,
-    fovValue = 70,
-    fullbright = false,
-    fpsMode = false,
-    antiAfk = true,
-    antiKick = false,
-    autoRejoin = false,
     -- intern
     busy = false,
-    stats = { eggs = 0, hatched = 0, delivered = 0, collected = 0, rebirths = 0, nests = 0 },
+    lastEggError = nil,
+    stats = { eggs = 0, hatched = 0, delivered = 0, planted = 0, collected = 0, rebirths = 0, nests = 0, cash = 0 },
 }
 
 -- Debug-Hooks (erlaubt Live-Inspektion/Steuerung von außen, z.B. via Executor)
@@ -183,6 +171,12 @@ local function OwnPlot()
     for _, p in ipairs(plots:GetChildren()) do
         if p:GetAttribute("NestsOwnerLoaded") == LP.UserId then return p end
     end
+    -- Fallback wie im Referenz-Script: Plot.Data.Owner (ObjectValue)
+    for _, p in ipairs(plots:GetChildren()) do
+        local data = p:FindFirstChild("Data")
+        local owner = data and data:FindFirstChild("Owner")
+        if owner and owner:IsA("ObjectValue") and owner.Value == LP then return p end
+    end
     return nil
 end
 local function PlotEggs(plot) return plot and plot:FindFirstChild("Eggs") end
@@ -191,15 +185,52 @@ local function PlotPets(plot) return plot and plot:FindFirstChild("Pets") end
 local function Basket() return LP:FindFirstChild("Basket") end
 local function CarriedEggs() local b = Basket() return b and b:GetChildren() or {} end
 
-local function TeleportTo(pos, yOffset)
-    local hrp = GetHRP()
-    if not hrp then return false end
-    local target = pos + Vector3.new(0, yOffset or 3, 0)
+-- Harter TP wie im getesteten Referenz-Script: ganzen Character pivoten
+local function PivotCharacter(cframe)
+    if typeof(cframe) ~= "CFrame" then return false end
+    local char, hrp = LP.Character, GetHRP()
+    if not char or not hrp then return false end
     local ok = pcall(function()
         hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.CFrame = CFrame.new(target)
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        char:PivotTo(cframe)
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
     end)
+    if ok then
+        -- merken, wo WIR den Charakter abgesetzt haben (für die Eingriff-Erkennung)
+        HUB.lastPlacedPos = cframe.Position
+        HUB.lastPlacedAt = os.clock()
+    end
     return ok
+end
+
+-- Zielpunkte wie im Referenz-Script: 10 studs über der Oberkante
+local EGG_HEIGHT_OFFSET = 10
+
+local function EggTopCFrame(model)
+    if not model or not model.Parent then return nil end
+    local ok, bb, size = pcall(function() return model:GetBoundingBox() end)
+    if not ok or typeof(bb) ~= "CFrame" or typeof(size) ~= "Vector3" then return nil end
+    return CFrame.new(Vector3.new(bb.Position.X, bb.Position.Y + size.Y * 0.5 + EGG_HEIGHT_OFFSET, bb.Position.Z))
+end
+
+local function PartTopCFrame(part)
+    if not part or not part:IsA("BasePart") or not part.Parent then return nil end
+    -- genau wie getBaseplateTopCFrame im Referenz-Script: cf * (0, size.Y/2 + 10, 0)
+    return part.CFrame * CFrame.new(0, part.Size.Y * 0.5 + EGG_HEIGHT_OFFSET, 0)
+end
+
+-- Reise zu einem CFrame: immer harter Pivot-TP wie im Referenz-Script (kein Tween)
+local function TravelToCFrame(cframe)
+    if typeof(cframe) ~= "CFrame" then return false end
+    return PivotCharacter(cframe)
+end
+
+-- Reisen zum Ei / zur Basis / zum Nest (per Position)
+local function TravelTo(pos, yOffset)
+    if typeof(pos) ~= "Vector3" then return false end
+    return TravelToCFrame(CFrame.new(pos + Vector3.new(0, yOffset or 3, 0)))
 end
 
 local function PlayerCash()
@@ -213,56 +244,159 @@ local function PlayerStat(name)
     return v and v.Value or 0
 end
 
+-- Kurze Zahl fürs UI (37,4 Mrd)
+local function ShortNumber(n)
+    n = tonumber(n) or 0
+    if n >= 1e9 then return string.format("%.2f Mrd", n / 1e9) end
+    if n >= 1e6 then return string.format("%.1f Mio", n / 1e6) end
+    if n >= 1e3 then return string.format("%.0f k", n / 1e3) end
+    return tostring(math.floor(n))
+end
+
+-- Letzter Prompt-Kontakt (echte Hold-Dauer / Aktions-Text) fürs UI
+local lastHold = { duration = nil, method = nil, action = nil }
+local PROMPT_SETTLE = 0.05   -- dem Server Zeit geben, den TP zu sehen (schnell, aber nicht 0)
+
+-- Echter Prompt-Trigger - genau das, was ein Executor-Feature "Proximity Prompt"
+-- bzw. das Referenz-Script macht: EIN fireproximityprompt auf den Prompt des Spiels.
+-- Die Hold-Dauer des Prompts wertet der Executor dabei selbst aus.
+--
+-- WICHTIG: kein prompt:InputHoldBegin()/InputHoldEnd() mehr! Damit laesst sich der
+-- Prompt-Status im Client verhaken (Hold ohne Ende, z.B. wenn das Ei waehrend des
+-- Haltens verschwindet) - danach geht KEIN Prompt mehr, auch nicht in anderen
+-- Scripts. Genau das war der Fehler.
 local function FirePrompt(prompt)
-    if not prompt or not prompt:IsA("ProximityPrompt") then return false end
+    if not prompt or not prompt:IsA("ProximityPrompt") or not prompt.Parent then return false end
+    if prompt.Enabled == false then return false end
+    lastHold.duration = tonumber(prompt.HoldDuration) or 0
+    lastHold.action = tostring(prompt.ActionText or "")
     local ok = pcall(fireproximityprompt, prompt)
+    lastHold.method = ok and "Proximity-Prompt" or "Prompt-Trigger fehlgeschlagen"
     return ok
 end
 
 -- ==============================================================================
 -- EGG SYSTEM
+--
+-- Der Server prüft beim Pickup die Distanz zwischen Spieler und Spawn-Punkt des
+-- Eis (Limit 90 studs) anhand SEINER Kopie der Spielerposition. Nach einem
+-- Teleport ist die erst ~0,3-0,5s später aktuell, deshalb scheiterte der alte
+-- ProximityPrompt-Weg ständig mit "refused: too far from its spawn point".
+-- Neu: EggPickup-Remote direkt feuern und wiederholen, bis der Korb voll ist.
 -- ==============================================================================
-local function SpawnPads()
-    local pads = {}
-    local es = Workspace:FindFirstChild("EggSpawns")
-    if es then
-        for _, p in ipairs(es:GetChildren()) do
-            if p:IsA("BasePart") then pads[#pads + 1] = p end
-        end
-    end
-    return pads
+local function ServerDataFolder()
+    return RS:FindFirstChild("ServerData")
+end
+local function ActiveEggsFolder()
+    local sd = ServerDataFolder()
+    return sd and sd:FindFirstChild("ActiveEggs")
+end
+local function EggPickupRemote() return Remote("EggPickup") end
+local function EggPlacedRemote() return Remote("EggPlaced") end
+local function ArrivalClaimRemote() return Remote("EggArrivalClaim") end
+
+-- Letzte Server-Antwort auf unser Pickup (echter Grund statt Rätselraten)
+local lastPickup = { mode = nil, reason = nil, name = nil }
+if EggPickupRemote() then
+    track(EggPickupRemote().OnClientEvent:Connect(function(mode, reason, name)
+        lastPickup = { mode = tostring(mode), reason = tostring(reason), name = tostring(name) }
+    end))
 end
 
--- Alle Feld-Eier (auf Spawn-Pads, mit Pickup-Prompt)
-local function FieldEggs()
+-- Alle Feld-Eier aus den Server-Records (nicht die gerenderten Attrappen)
+local function EggRecords()
     local out = {}
-    local pads = SpawnPads()
-    local rendered = Workspace:FindFirstChild("RenderedEggs")
-    if not rendered then return out end
-    for _, e in ipairs(rendered:GetChildren()) do
-        local prompt = e:FindFirstChild("Pickup", true)
-        local pp = e.PrimaryPart or e:FindFirstChildWhichIsA("BasePart", true)
-        if prompt and pp and prompt:IsA("ProximityPrompt") then
-            local pad, pd = nil, 1e9
-            for _, p in ipairs(pads) do
-                local d = (p.Position - pp.Position).Magnitude
-                if d < pd then pad, pd = p, d end
-            end
-            local info = EggInfo(e.Name)
+    local folder = ActiveEggsFolder()
+    if not folder then return out end
+    local now = Workspace:GetServerTimeNow()
+    for _, record in ipairs(folder:GetChildren()) do
+        local name = record:GetAttribute("Egg")
+        local pos = record:GetAttribute("Position")
+        local private = record:GetAttribute("PrivateTo")
+        local dropEnds = tonumber(record:GetAttribute("DropEndsAt"))
+        local falling = dropEnds ~= nil and dropEnds == dropEnds and dropEnds > now
+        if type(name) == "string" and typeof(pos) == "Vector3"
+            and (private == nil or private == LP.UserId) and not falling then
+            local info = EggInfo(name)
             out[#out + 1] = {
-                model = e,
-                prompt = prompt,
-                pos = pp.Position,
-                pad = pad,
-                padDist = pd,
-                onPad = pd < 12,
+                record = record,
+                id = record.Name,
+                name = name,
+                pos = pos,
+                weight = tonumber(record:GetAttribute("Weight")) or 1,
+                mutation = record:GetAttribute("Mutation"),
                 rarity = (info and info.Rarity) or "?",
                 luck = (info and info.Luck) or 0,
+                sell = (info and info.SellPrice) or 0,
                 growth = (info and info.GrowthTime) or 0,
             }
         end
     end
     return out
+end
+
+-- Gerenderte Feld-Eier (der Client baut die Modelle inkl. Pickup-Prompt selbst)
+local function RenderedEggs()
+    local out = {}
+    local rendered = Workspace:FindFirstChild("RenderedEggs")
+    if not rendered then return out end
+    for _, model in ipairs(rendered:GetChildren()) do
+        if model:IsA("Model") then
+            local pp = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
+            if pp then
+                local info = EggInfo(model.Name)
+                local prompt = model:FindFirstChild("Pickup", true)
+                if not prompt or not prompt:IsA("ProximityPrompt") then
+                    prompt = model:FindFirstChildWhichIsA("ProximityPrompt", true)
+                end
+                out[#out + 1] = {
+                    model = model,
+                    pos = pp.Position,
+                    rarity = (info and info.Rarity) or "?",
+                    prompt = (prompt and prompt:IsA("ProximityPrompt")) and prompt or nil,
+                }
+            end
+        end
+    end
+    return out
+end
+
+-- Gerendertes Ei zu einer Record-Position (für den Pickup-Prompt)
+local function RenderedEggNear(pos)
+    if typeof(pos) ~= "Vector3" then return nil end
+    local best, bestD
+    for _, r in ipairs(RenderedEggs()) do
+        local d = (r.pos - pos).Magnitude
+        if d < 12 and (not bestD or d < bestD) then best, bestD = r, d end
+    end
+    return best
+end
+
+-- Referenz-TP auf ein Feld-Ei: auf das gerenderte Modell (BoundingBox + 10 studs),
+-- sonst auf die Server-Position. Kein Distanzlimit, immer harter Pivot.
+local function TravelToEgg(egg)
+    if not egg or typeof(egg.pos) ~= "Vector3" then return false end
+    local rendered = RenderedEggNear(egg.pos)
+    local target = rendered and EggTopCFrame(rendered.model)
+    if not target then target = CFrame.new(egg.pos + Vector3.new(0, EGG_HEIGHT_OFFSET, 0)) end
+    return TravelToCFrame(target)
+end
+
+-- LoS-Eier (Tag EggPickupRequiresLineOfSight / RequiresLineOfSight) brauchen
+-- Sichtkontakt - nach dem TP die Kamera auf das Ei ausrichten.
+local function AimCameraAtEgg(rendered)
+    local prompt = rendered and rendered.prompt
+    local part = prompt and prompt.Parent
+    if not part or not part:IsA("BasePart") then return false end
+    local needs = prompt.RequiresLineOfSight == true
+    pcall(function()
+        if not needs and part:HasTag("EggPickupRequiresLineOfSight") then needs = true end
+    end)
+    if not needs then return false end
+    local cam = Workspace.CurrentCamera
+    if not cam then return false end
+    pcall(function() cam.CFrame = CFrame.lookAt(cam.CFrame.Position, part.Position) end)
+    return true
 end
 
 local function RarityAllowed(rarity)
@@ -271,84 +405,259 @@ local function RarityAllowed(rarity)
 end
 
 -- Priorisierung: Fast Cycle | Best Value | Nearest
+-- Wie im Referenz-Script wird nur auf Eier getippt, die der Client wirklich
+-- gerendert hat - nur dort sitzt der Pickup-Prompt, nur dort greift der Claim.
 local function PickTargetEgg()
     local hrp = GetHRP()
     if not hrp then return nil end
     local origin = hrp.Position
-    local best, bestScore = nil, -math.huge
-    for _, egg in ipairs(FieldEggs()) do
-        if egg.onPad and RarityAllowed(egg.rarity) then
+    local renderedList = RenderedEggs()
+    local function Claimable(egg)
+        for _, r in ipairs(renderedList) do
+            if (r.pos - egg.pos).Magnitude < 8 and r.prompt and r.prompt.Parent then return true end
+        end
+        return false
+    end
+    local best, bestScore, bestClaimable = nil, nil, false
+    for _, egg in ipairs(EggRecords()) do
+        if RarityAllowed(egg.rarity) then
             local travel = ((egg.pos - origin) * Vector3.new(1, 0, 1)).Magnitude
             if S.maxEggTravel <= 0 or travel <= S.maxEggTravel then
+                local claimable = Claimable(egg)
+                local value = RarityRank(egg.rarity) * 1000 + egg.luck + egg.sell * 10
                 local score
                 if S.eggPriority == "Nearest" then
                     score = -travel
                 elseif S.eggPriority == "Fast Cycle" then
                     -- schnelle Runden: Wert pro (Reisezeit + Wachstumszeit)
-                    local totalTime = (travel / 200) + egg.growth + 2
-                    score = (RarityRank(egg.rarity) * 100 + egg.luck / 1000) / math.max(totalTime, 1)
+                    score = value / math.max((travel / 200) + egg.growth + 2, 1)
                 else -- Best Value
-                    score = RarityRank(egg.rarity) * 100000 + egg.luck - travel * 0.1
+                    score = value - travel * 0.1
                 end
-                if score > bestScore then bestScore, best = score, egg end
+                -- Eier mit Prompt (gerendert) immer bevorzugen, der Rest nur als Notnagel
+                if claimable and not bestClaimable then
+                    best, bestScore, bestClaimable = egg, score, true
+                elseif claimable == bestClaimable and (not bestScore or score > bestScore) then
+                    best, bestScore = egg, score
+                end
             end
         end
     end
     return best
 end
 
--- Ei aufnehmen
-local function CollectEgg(egg)
-    if not egg or HUB.dead then return false end
-    if #CarriedEggs() > 0 then return false, "Basket voll" end
-    TeleportTo(egg.pos, 3)
-    task.wait(0.18)
-    FirePrompt(egg.prompt)
-    task.wait(0.25)
-    return #CarriedEggs() > 0
+-- Ei aufnehmen - exakt die Methode des getesteten Referenz-Scripts:
+--   TP auf 10 studs über der Oberkante des GERENDERTEN Eis -> fireproximityprompt.
+--   Den Prompt gibt es nur am gerenderten Modell, deshalb wird das zuerst gesucht
+--   (der Remote ist nur Notnagel, wenn gar kein Prompt greift).
+local function CollectEgg(egg, tries)
+    if not egg or HUB.dead then return false, "kein Ziel" end
+    if #CarriedEggs() > 0 then return false, "Korb voll" end
+    local before = #CarriedEggs()
+    lastPickup = { mode = nil, reason = nil, name = egg.name, hold = nil, method = nil }
+    local function WaitBasket(seconds)
+        local waited = 0
+        while waited < seconds and #CarriedEggs() == before do
+            task.wait(0.02)
+            waited = waited + 0.02
+        end
+        return #CarriedEggs() > before
+    end
+    for _ = 1, tonumber(tries) or S.pickupRetries or 8 do
+        if HUB.dead then return false, "unload" end
+        if #CarriedEggs() > before then return true end
+        if not egg.record.Parent then return false, "Ei weg" end
+        local rendered = RenderedEggNear(egg.pos)
+        local prompt = rendered and rendered.prompt
+        if prompt and prompt.Parent then
+            -- 1.) Referenz-TP: harter Pivot 10 studs über die Ei-Oberkante
+            local near = prompt.Parent
+            TravelToCFrame(EggTopCFrame(rendered.model) or CFrame.new(rendered.pos + Vector3.new(0, 10, 0)))
+            -- Hat der Prompt eine kleinere Aktivierungs-Distanz, noch näher ran
+            local hrp = GetHRP()
+            local maxDist = tonumber(prompt.MaxActivationDistance) or 10
+            if near and hrp and (hrp.Position - near.Position).Magnitude > maxDist then
+                TravelToCFrame(CFrame.new(near.Position + Vector3.new(0, math.max(3, maxDist - 2), 0)))
+            end
+            AimCameraAtEgg(rendered)      -- LoS-Eier: Sichtkontakt herstellen
+            task.wait(PROMPT_SETTLE)      -- Server muss unsere neue Position sehen
+            if WaitBasket(0.02) then return true end
+            -- 2.) ECHTER Prompt mit seiner echten Hold-Dauer
+            if prompt.Parent then FirePrompt(prompt) end
+            lastPickup.hold = lastHold.duration
+            lastPickup.method = lastHold.method
+            local hold = tonumber(lastHold.duration) or 0
+            if WaitBasket(math.max(0.2, hold + 0.15)) then return true end
+        end
+        -- 3.) Nur auf Wunsch ("Direkte Remotes"): EggPickup als Notnagel feuern.
+        -- Standard aus - Remotes koennen serverseitig auffallen und dann geht auch
+        -- der echte Prompt-Weg nicht mehr.
+        local remote = S.useRemotes and EggPickupRemote() or nil
+        if remote then
+            pcall(function() remote:FireServer(egg.id) end)
+            if WaitBasket(0.3) then return true end
+        end
+        -- Korb voll -> nicht weiter hämmern
+        if lastPickup.mode == "BasketFull" or (lastPickup.reason or ""):find("basket") then
+            return false, "Korb voll"
+        end
+    end
+    if #CarriedEggs() > before then return true end
+    return false, tostring(lastPickup.reason or lastPickup.mode or "keine Antwort")
 end
 
--- Lieferung: zur eigenen Plot-Baseplate, dann Place-Prompt am freien Nest
-local function FindPlacePrompt(plot)
-    local nests = PlotNests(plot)
-    if not nests then return nil end
-    for _, n in ipairs(nests:GetChildren()) do
-        local anchor = n:FindFirstChild("PlacePromptAnchor")
-        if anchor then
-            local prompt = anchor:FindFirstChild("Place")
-            if prompt then return prompt, anchor end
+-- Liefern: in die eigene Baseplate -> der Spiel-Client claimt selbst (Cash)
+local function DeliverCarried()
+    if #CarriedEggs() == 0 then return false, "Korb leer" end
+    local plot = OwnPlot()
+    local base = plot and plot:FindFirstChild("Baseplate")
+    if not base then return false, "kein Plot" end
+    local cashBefore = PlayerCash()
+    -- Heimreise: 10 studs über der Baseplate (genau wie im Referenz-Script)
+    TravelToCFrame(PartTopCFrame(base) or CFrame.new(base.Position + Vector3.new(0, 6, 0)))
+    for _ = 1, 40 do
+        task.wait(0.05)
+        if #CarriedEggs() == 0 then break end
+    end
+    if #CarriedEggs() > 0 and S.useRemotes then
+        -- Nur auf Wunsch: Claim wie der Spiel-Client selbst feuern
+        -- (Standard: das macht der Spiel-Client von allein - wie im Referenz-Script)
+        local claim, hrp = ArrivalClaimRemote(), GetHRP()
+        if claim and hrp then
+            local names = {}
+            for _, c in ipairs(CarriedEggs()) do names[#names + 1] = c.Name end
+            pcall(function() claim:FireServer(Workspace:GetServerTimeNow(), hrp.Position, names) end)
+            for _ = 1, 20 do
+                task.wait(0.05)
+                if #CarriedEggs() == 0 then break end
+            end
         end
+    end
+    if #CarriedEggs() > 0 then return false, "Lieferung haengt" end
+    S.stats.delivered = S.stats.delivered + 1
+    -- Die Auszahlung landet manchmal ein paar Frames nach dem Claim
+    local gained = PlayerCash() - cashBefore
+    for _ = 1, 20 do
+        if gained > 0 then break end
+        task.wait(0.05)
+        gained = PlayerCash() - cashBefore
+    end
+    if gained > 0 then S.stats.cash = S.stats.cash + gained end
+    return true, gained
+end
+
+-- Ei-Tools im Inventar (das sind die pflanzbaren Eier)
+local function EggTools()
+    local out = {}
+    for _, c in ipairs({ LP:FindFirstChild("Backpack"), LP.Character }) do
+        if c then
+            for _, t in ipairs(c:GetChildren()) do
+                if t:IsA("Tool") and t:HasTag("Egg") then
+                    local info = EggInfo(t.Name)
+                    out[#out + 1] = {
+                        tool = t,
+                        name = t.Name,
+                        weight = tonumber(t:GetAttribute("Weight")) or 1,
+                        mutation = t:GetAttribute("Mutation"),
+                        rarity = (info and info.Rarity) or "?",
+                        luck = (info and info.Luck) or 0,
+                        equipped = t.Parent == LP.Character,
+                    }
+                end
+            end
+        end
+    end
+    return out
+end
+
+local function HeldEggTool()
+    local char = LP.Character
+    if not char then return nil end
+    for _, c in ipairs(char:GetChildren()) do
+        if c:IsA("Tool") and c:HasTag("Egg") then return c end
     end
     return nil
 end
 
-local function DeliverAndPlace()
+local function FreeNest()
     local plot = OwnPlot()
-    if not plot then return false, "kein Plot" end
-    local base = plot:FindFirstChild("Baseplate")
-    if base then
-        TeleportTo(base.Position, 8)
+    local nests = PlotNests(plot)
+    if not nests then return nil, plot end
+    for _, n in ipairs(nests:GetChildren()) do
+        if n:GetAttribute("Unlocked") == true and not n:GetAttribute("Occupied") then
+            return n, plot
+        end
     end
-    -- Auf den Place-Prompt warten (Ei wandert vom Korb an das Nest)
-    local prompt, anchor
-    for _ = 1, 14 do
+    return nil, plot
+end
+
+local function NestPosition(nest, plot)
+    local anchor = nest:FindFirstChild("PlacePromptAnchor")
+    if anchor and anchor:IsA("BasePart") then return anchor.Position end
+    local model = nest:FindFirstChild("Model")
+    if model then return model:GetPivot().Position end
+    local base = plot and plot:FindFirstChild("Baseplate")
+    return base and base.Position or nil
+end
+
+-- Bestes Inventar-Ei in ein freies Nest pflanzen (Spiel-Methode, ohne Prompt)
+local function PlantBestEgg(minLuck)
+    if HUB.dead then return false, "unload" end
+    local remote = EggPlacedRemote()
+    if not remote then return false, "EggPlaced fehlt" end
+    local nest, plot = FreeNest()
+    if not nest then return false, "kein freies Nest" end
+    local pick
+    for _, entry in ipairs(EggTools()) do
+        if entry.luck >= (tonumber(minLuck) or 0) then
+            if not pick or entry.luck > pick.luck
+                or (entry.luck == pick.luck and RarityRank(entry.rarity) > RarityRank(pick.rarity)) then
+                pick = entry
+            end
+        end
+    end
+    if not pick then return false, "kein Ei im Inventar" end
+    local humanoid = GetHumanoid()
+    if not humanoid then return false, "kein Humanoid" end
+    if HeldEggTool() ~= pick.tool then
+        pcall(function() humanoid:UnequipTools() end)
+        task.wait(0.1)
+        pcall(function() humanoid:EquipTool(pick.tool) end)
+        task.wait(0.35)
+    end
+    -- Ohne gehaltenes Ei-Tool darf NICHT gefeuert werden, sonst ist das Ei weg
+    if not HeldEggTool() then return false, "Ei nicht in der Hand" end
+    local eggsFolder = plot and PlotEggs(plot)
+    local before = eggsFolder and #eggsFolder:GetChildren() or 0
+    local pos = NestPosition(nest, plot)
+    if pos then
+        TravelTo(pos, 4)
         task.wait(0.25)
-        prompt, anchor = FindPlacePrompt(plot)
-        if prompt then break end
     end
-    if not prompt then return false, "kein Place-Prompt (Ei evtl. gebrochen)" end
-    if anchor and anchor:IsA("BasePart") then
-        TeleportTo(anchor.Position, 4)
+    if nest:GetAttribute("Occupied") == true then return false, "Nest schon besetzt" end
+    if LP:GetAttribute("NoNest") == true then
+        -- Variante ohne Nest: irgendwo im eigenen Plot
+        local base = plot and plot:FindFirstChild("Baseplate")
+        local plantPos = base and base.Position or pos
+        if not plantPos then return false, "keine Position" end
+        pcall(function() remote:FireServer({ PlantPosition = plantPos }) end)
+    else
+        pcall(function() remote:FireServer({ NestId = nest.Name }) end)
+    end
+    local placed = false
+    for _ = 1, 8 do
         task.wait(0.15)
+        if nest:GetAttribute("Occupied") == true
+            or (eggsFolder and #eggsFolder:GetChildren() > before) then
+            placed = true
+            break
+        end
     end
-    FirePrompt(prompt)
-    task.wait(0.45)
-    local eggs = PlotEggs(plot)
-    if eggs and #eggs:GetChildren() > 0 then
-        S.stats.delivered = S.stats.delivered + 1
-        return true
+    if placed then
+        S.stats.planted = S.stats.planted + 1
+        return true, pick.name
     end
-    return false
+    return false, "Place abgelehnt"
 end
 
 -- Wachstumsrestzeit eines Plot-Eis (nutzt die Spielmodule, Fallback: Serverzeit)
@@ -373,28 +682,53 @@ local function GrowthRemaining(egg)
 end
 
 local function HatchEgg(egg)
+    local pp = egg.PrimaryPart or egg:FindFirstChildWhichIsA("BasePart", true)
+    -- Echter Weg zuerst: Hatch-Prompt des Spiels (TP 10 studs über die Oberkante)
+    local prompt = egg:FindFirstChild("Hatch", true)
+    if prompt and prompt:IsA("ProximityPrompt") then
+        if pp then
+            TravelToCFrame(PartTopCFrame(pp) or CFrame.new(pp.Position + Vector3.new(0, 10, 0)))
+            task.wait(PROMPT_SETTLE)
+        end
+        return FirePrompt(prompt), "prompt"
+    end
+    -- Nur auf Wunsch: Remote direkt
+    if not S.useRemotes then return false, "kein Hatch-Prompt" end
     local key = egg:GetAttribute("EggKey")
-    if not key then return false end
+    if not key then return false, "kein EggKey" end
     local remote = Remote("Hatch")
-    if not remote then return false end
-    local ok = pcall(function() remote:FireServer({ EggKey = key }) end)
-    return ok
+    if not remote then return false, "Hatch fehlt" end
+    if pp then
+        TravelTo(pp.Position, 4)
+        task.wait(0.2)
+    end
+    return (pcall(function() remote:FireServer({ EggKey = key }) end)), "remote"
 end
 
 -- Alle reifen Eier hatchen
+-- (der Hatch läuft als Animation, das Ei verschwindet erst ein paar Sekunden später)
 local function HatchReadyEggs()
     local plot = OwnPlot()
     local eggs = PlotEggs(plot)
     if not eggs then return 0 end
-    local count = 0
+    local before = #eggs:GetChildren()
+    local fired = 0
     for _, egg in ipairs(eggs:GetChildren()) do
         local prompt = egg:FindFirstChild("Hatch", true)
         local available = prompt and prompt:GetAttribute("HatchPromptAvailable")
         local remaining = GrowthRemaining(egg)
         if available == true or remaining <= 0 then
-            if HatchEgg(egg) then count = count + 1 end
+            if HatchEgg(egg) then fired = fired + 1 end
             task.wait(S.hatchDelay)
         end
+    end
+    if fired == 0 then return 0 end
+    local count = 0
+    for _ = 1, 40 do
+        task.wait(0.25)
+        local now = (eggs.Parent and #eggs:GetChildren()) or 0
+        count = math.max(before - now, 0)
+        if count >= fired then break end
     end
     S.stats.hatched = S.stats.hatched + count
     return count
@@ -427,17 +761,41 @@ local function HeldPets()
     return out
 end
 
--- Pet-Earnings einsammeln
+-- Pet-Earnings einsammeln: zuerst der echte Prompt am Pet, erst auf Wunsch der Remote
+local function PetCollectPrompt(pet)
+    for _, d in ipairs(pet:GetDescendants()) do
+        if d:IsA("ProximityPrompt") then
+            local txt = string.lower(tostring(d.ActionText or "") .. " " .. tostring(d.ObjectText or "") .. " " .. d.Name)
+            if txt:find("collect") or txt:find("einsammeln") or txt:find("abholen") or txt:find("kassieren") then
+                return d
+            end
+        end
+    end
+    return nil
+end
+
 local function CollectPetEarnings()
-    local remote = Remote("PetCollect")
-    if not remote then return 0 end
+    local remote = S.useRemotes and Remote("PetCollect") or nil
     local n = 0
     for _, pet in ipairs(OwnPlotPets()) do
-        local key = pet:GetAttribute("PetKey")
-        if key then
-            pcall(function() remote:FireServer(key) end)
+        local prompt = PetCollectPrompt(pet)
+        if prompt then
+            local hrp = GetHRP()
+            local pp = prompt.Parent
+            if hrp and pp and pp:IsA("BasePart") and (hrp.Position - pp.Position).Magnitude > 12 then
+                TravelTo(pp.Position, 6)
+                task.wait(PROMPT_SETTLE)
+            end
+            FirePrompt(prompt)
             n = n + 1
-            task.wait(0.08)
+            task.wait(0.12)
+        else
+            local key = pet:GetAttribute("PetKey")
+            if remote and key then
+                pcall(function() remote:FireServer(key) end)
+                n = n + 1
+                task.wait(0.08)
+            end
         end
     end
     S.stats.collected = S.stats.collected + n
@@ -688,6 +1046,7 @@ local function EspRarityOk(rarity)
 end
 
 local function HideESP(kind)
+    if kind == "egg" then ClearEggMarkers() end
     for inst, h in pairs(espMaps[kind]) do
         pcall(function() h:Destroy() end)
         espMaps[kind][inst] = nil
@@ -698,8 +1057,91 @@ local function HideESP(kind)
 end
 local ClearHighlights = HideESP
 
+-- ── Egg-Marker: zeigt ALLE ungeclaimten Feld-Eier aus ServerData.ActiveEggs,
+--    auch die der Client gerade nicht zeichnet. Damit kann man zu Fuß hinlaufen
+--    und selbst aufsammeln. ───────────────────────────────────────────────────
+local eggMarkers = {}          -- record-Id -> { part, highlight, gui, label }
+local markerFolder = nil
+
+local function MarkerFolder()
+    if markerFolder and markerFolder.Parent then return markerFolder end
+    markerFolder = Instance.new("Folder")
+    markerFolder.Name = "ArcHubEggMarkers"
+    markerFolder.Parent = Workspace.CurrentCamera or Workspace
+    return markerFolder
+end
+
+local function ForgetHighlight(instance)
+    for i = #HUB.highlights, 1, -1 do
+        if HUB.highlights[i].instance == instance then table.remove(HUB.highlights, i) end
+    end
+end
+
+local function ClearEggMarkers()
+    for id, m in pairs(eggMarkers) do
+        if m.highlight then
+            ForgetHighlight(m.highlight)
+            pcall(function() m.highlight:Destroy() end)
+        end
+        if m.part then pcall(function() m.part:Destroy() end) end
+        eggMarkers[id] = nil
+    end
+end
+
+local function MakeEggMarker(id, egg)
+    local color = ESP_COLORS[egg.rarity] or Color3.new(1, 1, 1)
+    local part = Instance.new("Part")
+    part.Name = "ArcEggMarker"
+    part.Shape = Enum.PartType.Ball
+    part.Size = Vector3.new(3, 3, 3)
+    part.Anchored = true
+    part.CanCollide = false
+    part.CanQuery = false       -- verfälscht keine Raycasts des Spiels
+    part.CanTouch = false
+    part.CastShadow = false
+    part.Material = Enum.Material.Neon
+    part.Color = color
+    part.Transparency = 0.6
+    part.CFrame = CFrame.new(egg.pos + Vector3.new(0, 1.5, 0))
+    part.Parent = MarkerFolder()
+
+    local h = Instance.new("Highlight")
+    h.Name = "ArcHubESP"
+    h.Adornee = part
+    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    h.FillColor = color
+    h.FillTransparency = 0.7
+    h.OutlineColor = Color3.fromRGB(255, 255, 255)
+    h.OutlineTransparency = 0
+    h.Parent = part
+    table.insert(HUB.highlights, { instance = h, kind = "egg" })
+
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "ArcEggLabel"
+    gui.Size = UDim2.fromOffset(180, 30)
+    gui.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
+    gui.AlwaysOnTop = true
+    gui.LightInfluence = 0
+    gui.MaxDistance = 6000
+    gui.Parent = part
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.fromScale(1, 1)
+    label.Font = Enum.Font.SourceSansBold
+    label.TextSize = 14
+    label.TextStrokeTransparency = 0.35
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.TextColor3 = color
+    label.Text = ""
+    label.Parent = gui
+
+    eggMarkers[id] = { part = part, highlight = h, gui = gui, label = label }
+    return eggMarkers[id]
+end
+
 local function HighlightFor(kind, inst)
     if not inst or not inst.Parent then return nil end
+    if not (inst:IsA("Model") or inst:IsA("BasePart")) then return nil end
     local map = espMaps[kind]
     local h = map[inst]
     if h and not h.Parent then h = nil map[inst] = nil end
@@ -721,19 +1163,83 @@ end
 
 local function UpdateEggESP()
     if not S.eggEsp then HideESP("egg") return end
-    local seen = {}
+    local seen, seenIds, known = {}, {}, {}
     local own = OwnPlot()
+    local hrp = GetHRP()
+    local origin = hrp and hrp.Position or nil
+    local maxDist = tonumber(S.espEggMaxDist) or 0
+    local labels = S.espEggLabels ~= false
+    local rendered = RenderedEggs()
 
-    -- 1) Feld-Eier: weißer Rahmen = liegt auf Spawn-Pad (claimbar)
-    for _, egg in ipairs(FieldEggs()) do
+    -- 1a) ALLE ungeclaimten Feld-Eier (Server-Records) -> Marker + Highlight
+    for _, egg in ipairs(EggRecords()) do
         if EspRarityOk(egg.rarity) then
-            local h = HighlightFor("egg", egg.model)
-            if h then
-                h.FillColor = ESP_COLORS[egg.rarity] or Color3.new(1, 1, 1)
-                h.OutlineColor = egg.onPad and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(110, 110, 110)
-                h.FillTransparency = egg.onPad and 0.45 or 0.75
-                seen[egg.model] = true
+            local dist = origin and ((egg.pos - origin) * Vector3.new(1, 0, 1)).Magnitude or 0
+            if maxDist <= 0 or dist <= maxDist then
+                local color = ESP_COLORS[egg.rarity] or Color3.new(1, 1, 1)
+                local outline = egg.mutation and Color3.fromRGB(255, 215, 80) or Color3.fromRGB(255, 255, 255)
+                -- passendes gerendertes Modell, falls der Client es zeichnet
+                local model, modelDist
+                for _, r in ipairs(rendered) do
+                    local d = (r.pos - egg.pos).Magnitude
+                    if d < 8 and (not modelDist or d < modelDist) then model, modelDist = r.model, d end
+                end
+                if model then
+                    known[model] = true
+                    local h = HighlightFor("egg", model)
+                    if h then
+                        h.FillColor = color
+                        h.OutlineColor = outline
+                        h.FillTransparency = 0.55
+                        seen[model] = true
+                    end
+                end
+                local m = eggMarkers[egg.id]
+                if not m then m = MakeEggMarker(egg.id, egg) end
+                if m and m.part and m.part.Parent then
+                    m.part.CFrame = CFrame.new(egg.pos + Vector3.new(0, 1.5, 0))
+                    m.part.Color = color
+                    m.part.Transparency = model and 0.75 or 0.6
+                    if m.highlight then
+                        m.highlight.Enabled = true
+                        m.highlight.FillColor = color
+                        m.highlight.FillTransparency = model and 0.85 or 0.7
+                        m.highlight.OutlineColor = outline
+                    end
+                    if m.gui then m.gui.Enabled = labels end
+                    if m.label and labels then
+                        m.label.TextColor3 = color
+                        m.label.Text = string.format("%s - %s - %dm%s", egg.name, egg.rarity, math.floor(dist),
+                            egg.mutation and (" - " .. tostring(egg.mutation)) or "")
+                    end
+                end
+                seenIds[egg.id] = true
             end
+        end
+    end
+
+    -- 1b) gerenderte Eier ohne Record (z.B. gerade am Runterfallen) trotzdem zeigen
+    for _, r in ipairs(rendered) do
+        if not known[r.model] and EspRarityOk(r.rarity) then
+            local h = HighlightFor("egg", r.model)
+            if h then
+                h.FillColor = ESP_COLORS[r.rarity] or Color3.new(1, 1, 1)
+                h.OutlineColor = Color3.fromRGB(255, 255, 255)
+                h.FillTransparency = 0.55
+                seen[r.model] = true
+            end
+        end
+    end
+
+    -- Marker aufräumen (geclaimt, weg oder rausgefiltert)
+    for id, m in pairs(eggMarkers) do
+        if not seenIds[id] then
+            if m.highlight then
+                ForgetHighlight(m.highlight)
+                pcall(function() m.highlight:Destroy() end)
+            end
+            if m.part then pcall(function() m.part:Destroy() end) end
+            eggMarkers[id] = nil
         end
     end
 
@@ -831,69 +1337,8 @@ local function RefreshESP()
 end
 
 -- ==============================================================================
--- PLAYER UTILITY
+-- NOCLIP (nur fuer den Egg-Farm - kein manueller Toggle mehr)
 -- ==============================================================================
-local savedLighting = nil
-local savedParticles = {}
-local flyBV, flyBG, flyGyro
-
-local function ApplySpeed()
-    local h = GetHumanoid()
-    if h then h.WalkSpeed = S.speedEnabled and S.speedValue or 16 end
-end
-local function ApplyJump()
-    local h = GetHumanoid()
-    if h then
-        h.UseJumpPower = true
-        h.JumpPower = S.jumpEnabled and S.jumpValue or 50
-    end
-end
-local function ApplyGravity()
-    Workspace.Gravity = S.gravityEnabled and S.gravityValue or 196.2
-end
-local function ApplyFOV()
-    local cam = GetCamera()
-    if cam then cam.FieldOfView = S.fovEnabled and S.fovValue or 70 end
-end
-
-local function SetFullbright(on)
-    if on then
-        if not savedLighting then
-            savedLighting = {
-                Ambient = Lighting.Ambient,
-                OutdoorAmbient = Lighting.OutdoorAmbient,
-                Brightness = Lighting.Brightness,
-                ClockTime = Lighting.ClockTime,
-                GlobalShadows = Lighting.GlobalShadows,
-                FogEnd = Lighting.FogEnd,
-            }
-        end
-        Lighting.Ambient = Color3.fromRGB(178, 178, 178)
-        Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
-        Lighting.Brightness = 3
-        Lighting.ClockTime = 14
-        Lighting.GlobalShadows = false
-        Lighting.FogEnd = 100000
-    elseif savedLighting then
-        for k, v in pairs(savedLighting) do pcall(function() Lighting[k] = v end) end
-        savedLighting = nil
-    end
-end
-
-local function SetFPSMode(on)
-    if on then
-        for _, d in ipairs(Workspace:GetDescendants()) do
-            if d:IsA("ParticleEmitter") and d.Enabled then
-                savedParticles[#savedParticles + 1] = d
-                d.Enabled = false
-            end
-        end
-    else
-        for _, d in ipairs(savedParticles) do pcall(function() d.Enabled = true end) end
-        savedParticles = {}
-    end
-end
-
 local function StartNoclip()
     if HUB.noclipConn then return end
     HUB.noclipConn = RunService.Stepped:Connect(function()
@@ -935,99 +1380,21 @@ local function SetFarmNoclip(on)
     end
 end
 
-local function StartFly()
-    if HUB.flyConn then return end
-    local hrp = GetHRP()
-    if not hrp then return end
-    flyBV = Instance.new("BodyVelocity")
-    flyBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-    flyBV.Velocity = Vector3.zero
-    flyBV.Parent = hrp
-    HUB.flyConn = RunService.RenderStepped:Connect(function()
-        if not S.flyEnabled then
-            if flyBV then flyBV.Velocity = Vector3.zero end
-            return
-        end
-        local cam = GetCamera()
-        local h = GetHumanoid()
-        local move = Vector3.zero
-        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + cam.CFrame.LookVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - cam.CFrame.LookVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - cam.CFrame.RightVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + cam.CFrame.RightVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.new(0, 1, 0) end
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move = move - Vector3.new(0, 1, 0) end
-        local hrp2 = GetHRP()
-        if flyBV and flyBV.Parent ~= hrp2 then flyBV.Parent = hrp2 end
-        if flyBV then flyBV.Velocity = move.Magnitude > 0 and move.Unit * S.flySpeed or Vector3.zero end
-        if h and move.Magnitude > 0 then h.PlatformStand = true end
-    end)
-end
-local function StopFly()
-    if HUB.flyConn then HUB.flyConn:Disconnect() HUB.flyConn = nil end
-    if flyBV then flyBV:Destroy() flyBV = nil end
-    local h = GetHumanoid()
-    if h then h.PlatformStand = false end
-end
-
--- Anti-AFK / Anti-Kick / Auto-Rejoin
-local function StartAntiAfk()
-    if HUB.afkConn then return end
-    HUB.afkConn = LP.Idled:Connect(function()
-        if S.antiAfk then
-            pcall(function() VirtualUser:CaptureController() end)
-            pcall(function() VirtualUser:ClickButton2(Vector2.new()) end)
-        end
-    end)
-end
-local function StartAntiKick()
-    if HUB.kickConns then return end
-    HUB.kickConns = {}
-    local reusable = Remotes and Remotes:FindFirstChild("Reusable")
-    local ban = reusable and reusable:FindFirstChild("Ban")
-    if ban then
-        local ok, conns = pcall(getconnections, ban.OnClientEvent)
-        if ok then
-            for _, c in ipairs(conns) do
-                pcall(function() c:Disable() end)
-            end
-            table.insert(HUB.kickConns, ban)
-        end
-    end
-end
-local function StartAutoRejoin()
-    if HUB.rejoinConn then return end
-    HUB.rejoinConn = LP.OnTeleport:Connect(function(state)
-        if state == Enum.TeleportState.Failed and S.autoRejoin then
-            pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP) end)
-        end
-    end)
-end
-
-local function AntiAfkHeartbeat()
-    if not S.antiAfk then return end
-    pcall(function()
-        local vu = VirtualUser
-        vu:CaptureController()
-        vu:ClickButton2(Vector2.new())
-    end)
-end
-
 -- ==============================================================================
 -- TELEPORTS / UTILITY BUTTONS
 -- ==============================================================================
 local function TeleportToOwnPlot()
     local plot = OwnPlot()
     if not plot then return Notify("Arc HUB", "Kein Plot geladen", "Error") end
-    local base = plot:FindFirstChild("Baseplate")
-    if base then TeleportTo(base.Position, 8) end
+    local base = plot:FindFirstChild("Baseplate") or plot:FindFirstChild("Baseplate", true)
+    if base then TravelToCFrame(PartTopCFrame(base)) end
 end
 local function TeleportToStall(name)
     local stalls = Workspace:FindFirstChild("Stalls")
     local stall = stalls and stalls:FindFirstChild(name)
     if not stall then return Notify("Arc HUB", "Stall nicht gefunden", "Error") end
     local pivot = stall:IsA("Model") and stall:GetPivot().Position or stall.Position
-    TeleportTo(pivot, 6)
+    TravelTo(pivot, 6)
 end
 
 -- ==============================================================================
@@ -1035,26 +1402,55 @@ end
 -- ==============================================================================
 local function EggLoopStep()
     if S.busy then return end
+    -- Shift halten = Auto Farm pausiert (manuell spielen / anderes Script nutzen)
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
+        return
+    end
+    -- Eingriff-Erkennung: hat uns jemand/etwas anderes bewegt, dann kurz still halten,
+    -- sonst kämpfen wir gegen den Nutzer (oder ein zweites Script) an.
+    local hrpNow = GetHRP()
+    if hrpNow and HUB.lastPlacedPos and HUB.lastPlacedAt then
+        local fresh = (os.clock() - HUB.lastPlacedAt) < 0.6
+        if not fresh and (hrpNow.Position - HUB.lastPlacedPos).Magnitude > 40 then
+            HUB.manualUntil = os.clock() + 1.5
+            HUB.lastPlacedPos = hrpNow.Position
+            if (os.clock() - (HUB.manualWarnAt or 0)) > 8 then
+                HUB.manualWarnAt = os.clock()
+                Notify("Auto Farm", "Pause - der Charakter wurde von aussen bewegt", "Info", 3)
+            end
+        end
+    end
+    if HUB.manualUntil and os.clock() < HUB.manualUntil then return end
     S.busy = true
     local ok, err = pcall(function()
-        -- 1) Korb leeren / Ei platzieren
-        if #CarriedEggs() > 0 then
-            if S.autoPlace then
-                DeliverAndPlace()
-            end
-        else
-            -- 2) neues Ei holen
+        -- 1) TP aufs gerenderte Ei (10 studs über der Oberkante) -> Claim-Prompt
+        local pickedUp = false
+        if #CarriedEggs() == 0 then
             local target = PickTargetEgg()
             if target then
-                if CollectEgg(target) then
+                local got, why = CollectEgg(target)
+                if got then
                     S.stats.eggs = S.stats.eggs + 1
+                    pickedUp = true
+                else
+                    S.lastEggError = tostring(why)
                 end
             end
         end
-        -- 3) reife Eier hatchen
-        if S.autoHatch then
-            HatchReadyEggs()
+        -- 1b) kurz am Ei stehen bleiben, bevor es heim geht (Server/Korb nachziehen lassen)
+        local delay = tonumber(S.deliverDelay) or 0
+        if pickedUp and delay > 0 then
+            local t0 = os.clock()
+            while not HUB.dead and (os.clock() - t0) < delay do task.wait(0.05) end
         end
+        -- 2) TP zurueck ueber die eigene Baseplate -> abliefern (zahlt Cash)
+        if #CarriedEggs() > 0 and S.autoDeliver then
+            DeliverCarried()
+        end
+        -- 3) Inventar-Eier in freie Nester pflanzen
+        if S.autoPlant then PlantBestEgg(S.plantMinLuck) end
+        -- 4) reife Eier hatchen
+        if S.autoHatch then HatchReadyEggs() end
     end)
     if not ok then pcall(Notify, "Arc HUB", "Egg-Loop: " .. tostring(err), "Error", 3) end
     S.busy = false
@@ -1120,21 +1516,9 @@ local function StartLoops()
     end)
     task.spawn(function()
         while not HUB.dead do
-            if S.eggEsp or S.petEsp or S.playerEsp then pcall(RefreshESP) end
+            -- immer aufrufen: schaltet ESP auch ab, wenn die Flags von außen kommen
+            pcall(RefreshESP)
             task.wait(0.5)
-        end
-    end)
-    task.spawn(function()
-        while not HUB.dead do
-            pcall(AntiAfkHeartbeat)
-            task.wait(60)
-        end
-    end)
-    task.spawn(function()
-        while not HUB.dead do
-            pcall(ApplySpeed)
-            pcall(ApplyJump)
-            task.wait(1)
         end
     end)
 end
@@ -1145,7 +1529,6 @@ end
 local mainTab = Window:AddTab("Auto Farm")
 local shopTab = Window:AddTab("Shops")
 local espTab  = Window:AddTab("ESP")
-local playerTab = Window:AddTab("Player")
 local setTab  = Window:AddTab("Settings")
 
 -- ---------------------------------------------------------------- Auto Farm
@@ -1157,7 +1540,7 @@ farmSub:AddButton({
     Name = "Smart All AN", Primary = true,
     Callback = safeCallback(function()
         S.eggLoop = true; S.petLoop = true; S.progressLoop = true
-        S.autoPlace = true; S.autoHatch = true
+        S.autoDeliver = true; S.autoHatch = true
         S.autoCollectPets = true; S.placeBestPets = true; S.autoPlacePets = true
         S.autoUnlockNests = true; S.autoClaimIndex = true; S.autoClaimOffline = true
         StartLoops()
@@ -1189,10 +1572,13 @@ farmSub:AddToggle({
 local statusSub = farmSub
 statusSub:AddDivider()
 local function StatusParagraph()
+    local hold = tonumber(lastHold.duration) or 0
     return string.format(
-        "Eggs %d | platziert %d | gehatcht %d | Collects %d | Nester %d | Rebirth %d | Luck x%.1f",
-        S.stats.eggs, S.stats.delivered, S.stats.hatched, S.stats.collected, S.stats.nests, S.stats.rebirths,
-        HatchLuckMultiplier())
+        "Eier %d | geliefert %d (+%s $) | gepflanzt %d | gehatcht %d | Collects %d | Nester %d | Rebirth %d | Luck x%.1f",
+        S.stats.eggs, S.stats.delivered, ShortNumber(S.stats.cash), S.stats.planted, S.stats.hatched,
+        S.stats.collected, S.stats.nests, S.stats.rebirths, HatchLuckMultiplier())
+        .. string.format("\nPickup: %s | echter Prompt, Hold %.2fs | letzter Fehler: %s",
+            tostring(lastHold.method or "-"), hold, S.lastEggError and tostring(S.lastEggError) or "-")
 end
 local statusLabel = statusSub:AddParagraph({ Title = "Stats", Text = StatusParagraph() })
 task.spawn(function()
@@ -1221,8 +1607,8 @@ eggsLoopSub:AddMultiDropdown({
     end)
 })
 eggsLoopSub:AddSlider({
-    Name = "Loop-Delay", Min = 0.1, Max = 3, Default = 0.35, Suffix = "s", Flag = "eggs_delay",
-    Callback = safeCallback(function(v) S.eggLoopDelay = tonumber(v) or 0.35 end)
+    Name = "Loop-Delay", Min = 0.05, Max = 3, Default = 0.15, Suffix = "s", Flag = "eggs_delay",
+    Callback = safeCallback(function(v) S.eggLoopDelay = tonumber(v) or 0.15 end)
 })
 eggsLoopSub:AddSlider({
     Name = "Max. Distanz (0 = egal)", Min = 0, Max = 5000, Default = 0, Suffix = " studs", Flag = "eggs_travel",
@@ -1230,8 +1616,31 @@ eggsLoopSub:AddSlider({
 })
 eggsLoopSub:AddDivider()
 eggsLoopSub:AddToggle({
-    Name = "Auto Place", Default = true, Flag = "eggs_place",
-    Callback = safeCallback(function(v) S.autoPlace = v end)
+    Name = "Auto Liefern (Cash)", Default = true, Flag = "eggs_deliver",
+    Callback = safeCallback(function(v) S.autoDeliver = v end)
+})
+eggsLoopSub:AddToggle({
+    Name = "Auto Pflanzen (Inventar)", Default = false, Flag = "eggs_plant",
+    Callback = safeCallback(function(v)
+        S.autoPlant = v
+        if v then StartLoops() end
+    end)
+})
+eggsLoopSub:AddSlider({
+    Name = "Pflanzen ab Luck", Min = 0, Max = 5000, Default = 0, Flag = "eggs_plantluck",
+    Callback = safeCallback(function(v) S.plantMinLuck = tonumber(v) or 0 end)
+})
+eggsLoopSub:AddSlider({
+    Name = "Pickup-Versuche", Min = 2, Max = 20, Default = 8, Flag = "eggs_pickuptries",
+    Callback = safeCallback(function(v) S.pickupRetries = math.floor(tonumber(v) or 8) end)
+})
+eggsLoopSub:AddSlider({
+    Name = "Pause vor Heim-TP", Min = 0, Max = 5, Default = 0.15, Suffix = "s", Flag = "eggs_deliverdelay",
+    Callback = safeCallback(function(v) S.deliverDelay = tonumber(v) or 0.15 end)
+})
+eggsLoopSub:AddToggle({
+    Name = "Direkte Remotes (Notnagel)", Default = false, Flag = "eggs_useremotes",
+    Callback = safeCallback(function(v) S.useRemotes = v end)
 })
 eggsLoopSub:AddToggle({
     Name = "Auto Hatch", Default = true, Flag = "eggs_hatch",
@@ -1248,16 +1657,26 @@ eggsLoopSub:AddSlider({
     Name = "Hatch-Delay", Min = 0.2, Max = 5, Default = 1.0, Suffix = "s", Flag = "eggs_hatchdelay",
     Callback = safeCallback(function(v) S.hatchDelay = tonumber(v) or 1 end)
 })
+eggsLoopSub:AddParagraph({
+    Title = "Pickup-Methode",
+    Text = "Harter TP (Character:PivotTo) auf 10 studs über die Ei-Oberkante, dann der ECHTE Pickup-Prompt des Spiels (fireproximityprompt) - genau wie das Referenz-Script. Standardmäßig werden KEINE Remotes gefeuert; 'Direkte Remotes' schaltet den alten Notnagel wieder ein. Shift halten pausiert die Farm sofort, und wenn der Charakter von aussen bewegt wird, pausiert sie 1,5s von selbst.",
+})
 eggsLoopSub:AddButton({
     Name = "1 Ei farmen", Primary = true,
     Callback = safeCallback(function()
         if #CarriedEggs() == 0 then
             local t = PickTargetEgg()
             if not t then return Notify("Eggs", "kein Ei gefunden", "Info") end
-            if CollectEgg(t) then Notify("Eggs", t.model.Name .. " aufgenommen", "Success") else Notify("Eggs", "Aufnahme fehlgeschlagen", "Error") end
+            local got, why = CollectEgg(t, 10)
+            if got then
+                Notify("Eggs", t.name .. " aufgenommen", "Success")
+            else
+                Notify("Eggs", "Aufnahme abgelehnt: " .. tostring(why), "Error", 4)
+            end
         else
-            local ok, why = DeliverAndPlace()
-            Notify("Eggs", ok and "Ei platziert" or ("Place fehlgeschlagen: " .. tostring(why)), ok and "Success" or "Error")
+            local ok, gained = DeliverCarried()
+            Notify("Eggs", ok and ("geliefert (+" .. ShortNumber(gained or 0) .. " $)") or ("Lieferung: " .. tostring(gained)),
+                ok and "Success" or "Error")
         end
     end)
 })
@@ -1284,20 +1703,22 @@ eggsLoopSub:AddButton({
 })
 
 local eggsInfoSub = eggsLoopSub
-eggsInfoSub:AddParagraph({
-    Title = "Ablauf",
-    Text = "Ei antippen -> Korb -> Plot -> Place -> Hatch. Macht der Loop alles selbst.",
+eggsInfoSub:AddButton({
+    Name = "Bestes Ei pflanzen",
+    Callback = safeCallback(function()
+        local ok, res = PlantBestEgg(S.plantMinLuck)
+        Notify("Pflanzen", ok and ("gepflanzt: " .. tostring(res)) or tostring(res), ok and "Success" or "Error")
+    end)
 })
 eggsInfoSub:AddButton({
     Name = "Eier zählen",
     Callback = safeCallback(function()
-        local all, onPad = 0, 0
-        for _, egg in ipairs(FieldEggs()) do
-            all = all + 1
-            if egg.onPad then onPad = onPad + 1 end
-        end
-        Notify("Eier", string.format("%d Eier, %d auf Pads", all, onPad), "Info")
+        Notify("Eier", string.format("%d Feld-Eier | %d Ei-Tools im Inventar", #EggRecords(), #EggTools()), "Info", 4)
     end)
+})
+eggsInfoSub:AddParagraph({
+    Title = "Ablauf (getestetes Rezept)",
+    Text = "Hin zum Ei (harter TP, 10 studs über der Oberkante) -> Pickup per echtem Spiel-Prompt -> zurück über die eigene Baseplate -> Abgabe gibt Cash. Ohne Prompt wird abgebrochen statt Remotes zu hämmern (siehe 'Direkte Remotes'). Inventar-Eier werden ins freie Nest gepflanzt, reife Eier gehatcht.",
 })
 
 -- ---------------------------------------------------------------- Pets
@@ -1511,87 +1932,28 @@ espSub:AddMultiDropdown({
         RefreshESP()
     end)
 })
-
--- ---------------------------------------------------------------- Player
-local moveSub = playerTab:AddSubTab("Movement")
-moveSub:AddToggle({
-    Name = "Speed an", Default = false, Flag = "pl_speed_on",
-    Callback = safeCallback(function(v) S.speedEnabled = v ApplySpeed() end)
+espSub:AddToggle({
+    Name = "Eier: Name + Distanz", Default = true, Flag = "esp_egglabels",
+    Callback = safeCallback(function(v) S.espEggLabels = v RefreshESP() end)
 })
-moveSub:AddSlider({
-    Name = "WalkSpeed", Min = 16, Max = 500, Default = 16, Flag = "pl_speed",
-    Callback = safeCallback(function(v) S.speedValue = tonumber(v) or 16 if S.speedEnabled then ApplySpeed() end end)
+espSub:AddSlider({
+    Name = "Eier: Marker bis (0 = alle)", Min = 0, Max = 8000, Default = 0, Suffix = " studs", Flag = "esp_eggmax",
+    Callback = safeCallback(function(v) S.espEggMaxDist = tonumber(v) or 0 RefreshESP() end)
 })
-moveSub:AddToggle({
-    Name = "Jump an", Default = false, Flag = "pl_jump_on",
-    Callback = safeCallback(function(v) S.jumpEnabled = v ApplyJump() end)
+espSub:AddParagraph({
+    Title = "Egg ESP",
+    Text = "Markiert ALLE ungeclaimten Feld-Eier (Server-Records), auch die der Client gerade nicht zeichnet. Farbe = Rarität, gelber Rahmen = Mutation, Label = Name/Rarität/Distanz.",
 })
-moveSub:AddSlider({
-    Name = "JumpPower", Min = 50, Max = 500, Default = 50, Flag = "pl_jump",
-    Callback = safeCallback(function(v) S.jumpValue = tonumber(v) or 50 if S.jumpEnabled then ApplyJump() end end)
-})
-moveSub:AddToggle({
-    Name = "Fly (WASD)", Default = false, Flag = "pl_fly",
-    Callback = safeCallback(function(v)
-        S.flyEnabled = v
-        if v then StartFly() else StopFly() end
+espSub:AddButton({
+    Name = "Nächstes Ei anlaufen",
+    Callback = safeCallback(function()
+        local t = PickTargetEgg()
+        if t then TravelToEgg(t) Notify("Egg ESP", t.name, "Success") else Notify("Egg ESP", "kein Ei", "Info") end
     end)
 })
-moveSub:AddSlider({
-    Name = "Fly-Speed", Min = 20, Max = 500, Default = 60, Flag = "pl_flyspeed",
-    Callback = safeCallback(function(v) S.flySpeed = tonumber(v) or 60 end)
-})
-moveSub:AddToggle({
-    Name = "Noclip", Default = false, Flag = "pl_noclip",
-    Callback = safeCallback(function(v) S.noclip = v if v then StartNoclip() end end)
-})
-moveSub:AddToggle({
-    Name = "Gravity an", Default = false, Flag = "pl_grav_on",
-    Callback = safeCallback(function(v) S.gravityEnabled = v ApplyGravity() end)
-})
-moveSub:AddSlider({
-    Name = "Gravity", Min = 0, Max = 500, Default = 196, Flag = "pl_grav",
-    Callback = safeCallback(function(v) S.gravityValue = tonumber(v) or 196 if S.gravityEnabled then ApplyGravity() end end)
-})
-moveSub:AddToggle({
-    Name = "FOV an", Default = false, Flag = "pl_fov_on",
-    Callback = safeCallback(function(v) S.fovEnabled = v ApplyFOV() end)
-})
-moveSub:AddSlider({
-    Name = "Field of View", Min = 40, Max = 160, Default = 70, Flag = "pl_fov",
-    Callback = safeCallback(function(v) S.fovValue = tonumber(v) or 70 if S.fovEnabled then ApplyFOV() end end)
-})
 
-local worldSub = playerTab:AddSubTab("Welt")
-worldSub:AddToggle({
-    Name = "Fullbright", Default = false, Flag = "pl_fullbright",
-    Callback = safeCallback(function(v) S.fullbright = v SetFullbright(v) end)
-})
-worldSub:AddToggle({
-    Name = "FPS-Modus", Default = false, Flag = "pl_fps",
-    Callback = safeCallback(function(v) S.fpsMode = v SetFPSMode(v) end)
-})
-worldSub:AddDivider()
-worldSub:AddButton({ Name = "Eigener Plot", Primary = true, Callback = safeCallback(function() TeleportToOwnPlot() end) })
-worldSub:AddButton({ Name = "Egg-Tracker", Callback = safeCallback(function() TeleportToStall("EggTracker") end) })
-worldSub:AddButton({ Name = "Nächstes Ei", Callback = safeCallback(function()
-    local t = PickTargetEgg()
-    if t then TeleportTo(t.pos, 4) Notify("Teleport", t.model.Name, "Success") else Notify("Teleport", "kein Ei", "Info") end
-end) })
-
-local safetySub = playerTab:AddSubTab("Sicherheit")
-safetySub:AddToggle({
-    Name = "Anti-AFK", Default = true, Flag = "pl_antiafk",
-    Callback = safeCallback(function(v) S.antiAfk = v StartAntiAfk() end)
-})
-safetySub:AddToggle({
-    Name = "Anti-Kick", Default = false, Flag = "pl_antikick",
-    Callback = safeCallback(function(v) S.antiKick = v if v then StartAntiKick() end end)
-})
-safetySub:AddToggle({
-    Name = "Auto-Rejoin", Default = false, Flag = "pl_rejoin",
-    Callback = safeCallback(function(v) S.autoRejoin = v if v then StartAutoRejoin() end end)
-})
+-- Player-Tab ist komplett entfernt (Speed/Jump/Fly/Gravity/FOV/Fullbright/
+-- FPS-Modus/Anti-AFK/Anti-Kick/Auto-Rejoin) - das war die Fehlerquelle.
 
 -- ---------------------------------------------------------------- Settings
 local setSub = setTab:AddSubTab("Main")
@@ -1632,23 +1994,19 @@ function HUB.Unload()
     -- Verbindungen trennen
     for _, c in ipairs(HUB.conns) do pcall(function() c:Disconnect() end) end
     HUB.conns = {}
-    for _, k in ipairs({ "noclipConn", "flyConn", "afkConn", "rejoinConn", "loopsRunning" }) do
+    for _, k in ipairs({ "noclipConn", "loopsRunning" }) do
         if HUB[k] and type(HUB[k]) ~= "boolean" then pcall(function() HUB[k]:Disconnect() end) end
         HUB[k] = nil
     end
     -- Highlights + Drawings
     for _, h in ipairs(HUB.highlights) do pcall(function() h.instance:Destroy() end) end
     HUB.highlights = {}
+    pcall(ClearEggMarkers)
     for _, d in ipairs(HUB.drawings) do pcall(function() d:Remove() end) end
     HUB.drawings = {}
-    -- Werte zurücksetzen
-    S.speedEnabled = false  pcall(ApplySpeed)
-    S.jumpEnabled = false   pcall(ApplyJump)
-    S.gravityEnabled = false pcall(ApplyGravity)
-    S.fovEnabled = false    pcall(ApplyFOV)
-    if savedLighting then pcall(SetFullbright, false) end
-    if #savedParticles > 0 then pcall(SetFPSMode, false) end
-    pcall(StopFly)
+    -- Noclip/Kollisionen zuruecksetzen
+    S.farmNoclip, S.farmNoclipActive = false, false
+    pcall(RestoreCollisions)
     pcall(function() Window:Destroy() end)
     _G.ArcRideAPet = nil
     print("[Arc HUB] Reite ein Haustier unloaded.")
@@ -1660,7 +2018,8 @@ end
 HUB.actions = {
     PickTargetEgg = PickTargetEgg,
     CollectEgg = CollectEgg,
-    DeliverAndPlace = DeliverAndPlace,
+    DeliverCarried = DeliverCarried,
+    PlantBestEgg = PlantBestEgg,
     HatchReadyEggs = HatchReadyEggs,
     CollectPetEarnings = CollectPetEarnings,
     PlaceBestPets = PlaceBestPets,
@@ -1668,19 +2027,12 @@ HUB.actions = {
     UnlockNests = UnlockNests,
     TryRebirth = TryRebirth,
     OwnPlot = OwnPlot,
-    FieldEggs = FieldEggs,
+    EggRecords = EggRecords,
+    RenderedEggs = RenderedEggs,
+    EggTools = EggTools,
     GrowthRemaining = GrowthRemaining,
 }
 StartLoops()
 Notify("Arc HUB", "Reite ein Haustier geladen", "Success", 3)
-
--- Character-Respawn: Werte neu anwenden
-track(LP.CharacterAdded:Connect(function()
-    task.wait(1)
-    pcall(ApplySpeed)
-    pcall(ApplyJump)
-    pcall(ApplyGravity)
-    pcall(ApplyFOV)
-end))
 
 return HUB
