@@ -109,7 +109,8 @@ local S = {
     maxEggTravel = 0,               -- 0 = unbegrenzt
     pickupRetries = 8,              -- Versuche pro Ei (Server-Positions-Lag)
     deliverDelay = 0,               -- Pause nach dem Pickup, bevor es heim zur Basis geht (0 = sofort)
-    useRemotes = false,             -- false = NUR echter Spiel-Weg (Prompt), keine synthetischen Remotes
+    useRemotes = true,              -- EggPickup/EggArrivalClaim direkt feuern = instant (keine Prompt-Hold-Zeit)
+    usePrompt = false,              -- zusaetzlich den echten ProximityPrompt feuern (kostet dessen Hold-Dauer)
     -- Pet loop
     petLoop = false,
     autoCollectPets = true,
@@ -447,10 +448,11 @@ local function PickTargetEgg()
     return best
 end
 
--- Ei aufnehmen - exakt die Methode des getesteten Referenz-Scripts:
---   TP auf 10 studs über der Oberkante des GERENDERTEN Eis -> fireproximityprompt.
---   Den Prompt gibt es nur am gerenderten Modell, deshalb wird das zuerst gesucht
---   (der Remote ist nur Notnagel, wenn gar kein Prompt greift).
+-- Ei aufnehmen - INSTANT-Weg:
+--   TP aufs Ei (10 studs über der Oberkante) -> EggPickup-Remote SOFORT feuern.
+--   Keine Hold-Zeit, kein Settle, kein Warten auf den Prompt. Der echte
+--   ProximityPrompt wird nur zusätzlich gefeuert, wenn "Prompt mitfeuern" an ist
+--   (standardmässig aus, denn dessen Hold-Dauer kostet genau die Zeit, die wir wegwollen).
 local function CollectEgg(egg, tries)
     if not egg or HUB.dead then return false, "kein Ziel" end
     if #CarriedEggs() > 0 then return false, "Korb voll" end
@@ -464,44 +466,47 @@ local function CollectEgg(egg, tries)
         end
         return #CarriedEggs() > before
     end
+    local remote = EggPickupRemote()
+    -- SOFORT claimen: Remote zuerst (eine Anfrage, keine Hold-Zeit)
+    local function Claim()
+        if S.useRemotes and remote then
+            pcall(function() remote:FireServer(egg.id) end)
+            lastPickup.method = "Remote (instant)"
+        end
+        if S.usePrompt then
+            local r = RenderedEggNear(egg.pos)
+            local p = r and r.prompt
+            if p and p.Parent then
+                AimCameraAtEgg(r)
+                FirePrompt(p)
+                lastPickup.hold = lastHold.duration
+                if not lastPickup.method then lastPickup.method = lastHold.method end
+            end
+        end
+    end
     for _ = 1, tonumber(tries) or S.pickupRetries or 8 do
         if HUB.dead then return false, "unload" end
         if #CarriedEggs() > before then return true end
         if not egg.record.Parent then return false, "Ei weg" end
+        -- 1.) harter TP direkt aufs Ei (10 studs über der Oberkante)
         local rendered = RenderedEggNear(egg.pos)
         local prompt = rendered and rendered.prompt
+        TravelToCFrame((rendered and EggTopCFrame(rendered.model))
+            or CFrame.new(egg.pos + Vector3.new(0, EGG_HEIGHT_OFFSET, 0)))
         if prompt and prompt.Parent then
-            -- 1.) Referenz-TP: harter Pivot 10 studs über die Ei-Oberkante
             local near = prompt.Parent
-            TravelToCFrame(EggTopCFrame(rendered.model) or CFrame.new(rendered.pos + Vector3.new(0, 10, 0)))
-            -- Hat der Prompt eine kleinere Aktivierungs-Distanz, noch näher ran
             local hrp = GetHRP()
             local maxDist = tonumber(prompt.MaxActivationDistance) or 10
-            if near and hrp and (hrp.Position - near.Position).Magnitude > maxDist then
+            if hrp and (hrp.Position - near.Position).Magnitude > maxDist then
                 TravelToCFrame(CFrame.new(near.Position + Vector3.new(0, math.max(3, maxDist - 2), 0)))
             end
-            AimCameraAtEgg(rendered)      -- LoS-Eier: Sichtkontakt herstellen
-            -- 2.) ECHTER Prompt sofort feuern (kein Settle - der bremste jeden Zyklus).
-            -- Braucht der Server nach dem TP einen Moment, wird direkt nachgefeuert.
-            if prompt.Parent then FirePrompt(prompt) end
-            lastPickup.hold = lastHold.duration
-            lastPickup.method = lastHold.method
-            local hold = tonumber(lastHold.duration) or 0
-            if WaitBasket(0.04) then return true end
-            if prompt.Parent then
-                task.wait(0.02)
-                FirePrompt(prompt)
-            end
-            if WaitBasket(math.max(0.15, hold + 0.12)) then return true end
         end
-        -- 3.) Nur auf Wunsch ("Direkte Remotes"): EggPickup als Notnagel feuern.
-        -- Standard aus - Remotes koennen serverseitig auffallen und dann geht auch
-        -- der echte Prompt-Weg nicht mehr.
-        local remote = S.useRemotes and EggPickupRemote() or nil
-        if remote then
-            pcall(function() remote:FireServer(egg.id) end)
-            if WaitBasket(0.3) then return true end
-        end
+        -- 2.) sofort claimen, direkt nach dem TP (gleicher Tick)
+        Claim()
+        if WaitBasket(0.06) then return true end
+        -- 3.) Nachschlag, falls der Server den TP noch nicht gesehen hat
+        Claim()
+        if WaitBasket(0.18) then return true end
         -- Korb voll -> nicht weiter hämmern
         if lastPickup.mode == "BasketFull" or (lastPickup.reason or ""):find("basket") then
             return false, "Korb voll"
@@ -520,22 +525,23 @@ local function DeliverCarried()
     local cashBefore = PlayerCash()
     -- Heimreise: 10 studs über der Baseplate (genau wie im Referenz-Script)
     TravelToCFrame(PartTopCFrame(base) or CFrame.new(base.Position + Vector3.new(0, 6, 0)))
-    for _ = 1, 100 do
-        task.wait(0.02)
+    -- Claim SOFORT selbst feuern (statt auf den Spiel-Client zu warten), mit
+    -- wenigen Nachschlägen - die Position ist beim Server nach dem TP einen
+    -- Moment alt, deshalb wird wiederholt statt nur einmal.
+    local claim = S.useRemotes and ArrivalClaimRemote() or nil
+    local names = {}
+    for _, c in ipairs(CarriedEggs()) do names[#names + 1] = c.Name end
+    for _ = 1, 8 do
         if #CarriedEggs() == 0 then break end
-    end
-    if #CarriedEggs() > 0 and S.useRemotes then
-        -- Nur auf Wunsch: Claim wie der Spiel-Client selbst feuern
-        -- (Standard: das macht der Spiel-Client von allein - wie im Referenz-Script)
-        local claim, hrp = ArrivalClaimRemote(), GetHRP()
-        if claim and hrp then
-            local names = {}
-            for _, c in ipairs(CarriedEggs()) do names[#names + 1] = c.Name end
-            pcall(function() claim:FireServer(Workspace:GetServerTimeNow(), hrp.Position, names) end)
-            for _ = 1, 20 do
-                task.wait(0.05)
-                if #CarriedEggs() == 0 then break end
+        if claim then
+            local hrp = GetHRP()
+            if hrp then
+                pcall(function() claim:FireServer(Workspace:GetServerTimeNow(), hrp.Position, names) end)
             end
+        end
+        for _ = 1, 8 do            -- ~0,16s pro Anlauf
+            task.wait(0.02)
+            if #CarriedEggs() == 0 then break end
         end
     end
     if #CarriedEggs() > 0 then return false, "Lieferung haengt" end
@@ -1560,9 +1566,6 @@ local setTab  = Window:AddTab("Settings")
 
 -- ---------------------------------------------------------------- Auto Farm
 local farmSub = mainTab:AddSubTab("Smart All")
-farmSub:AddParagraph({
-    Text = "Alles an: Eggs farmen, Pets sammeln, Nester + Rebirth.",
-})
 farmSub:AddButton({
     Name = "Smart All AN", Primary = true,
     Callback = safeCallback(function()
@@ -1654,24 +1657,20 @@ eggsLoopSub:AddToggle({
     end)
 })
 eggsLoopSub:AddSlider({
-    Name = "Pflanzen ab Luck", Min = 0, Max = 5000, Default = 0, Flag = "eggs_plantluck",
-    Callback = safeCallback(function(v) S.plantMinLuck = tonumber(v) or 0 end)
-})
-eggsLoopSub:AddSlider({
     Name = "Pickup-Versuche", Min = 2, Max = 20, Default = 8, Flag = "eggs_pickuptries",
     Callback = safeCallback(function(v) S.pickupRetries = math.floor(tonumber(v) or 8) end)
-})
-eggsLoopSub:AddSlider({
-    Name = "Pause vor Heim-TP (0 = sofort)", Min = 0, Max = 5, Default = 0, Suffix = "s", Flag = "eggs_deliverdelay",
-    Callback = safeCallback(function(v) S.deliverDelay = tonumber(v) or 0 end)
 })
 eggsLoopSub:AddSlider({
     Name = "Pflanzen/Hatch alle", Min = 0, Max = 30, Default = 3, Suffix = "s", Flag = "eggs_sideinterval",
     Callback = safeCallback(function(v) S.sideInterval = tonumber(v) or 3 end)
 })
 eggsLoopSub:AddToggle({
-    Name = "Direkte Remotes (Notnagel)", Default = false, Flag = "eggs_useremotes",
+    Name = "Instant-Claim (Remotes)", Default = true, Flag = "eggs_useremotes",
     Callback = safeCallback(function(v) S.useRemotes = v end)
+})
+eggsLoopSub:AddToggle({
+    Name = "Prompt mitfeuern (Hold-Zeit)", Default = false, Flag = "eggs_useprompt",
+    Callback = safeCallback(function(v) S.usePrompt = v end)
 })
 eggsLoopSub:AddToggle({
     Name = "Auto Hatch", Default = true, Flag = "eggs_hatch",
@@ -1687,10 +1686,6 @@ eggsLoopSub:AddToggle({
 eggsLoopSub:AddSlider({
     Name = "Hatch-Delay", Min = 0.2, Max = 5, Default = 1.0, Suffix = "s", Flag = "eggs_hatchdelay",
     Callback = safeCallback(function(v) S.hatchDelay = tonumber(v) or 1 end)
-})
-eggsLoopSub:AddParagraph({
-    Title = "Pickup-Methode",
-    Text = "Harter TP (Character:PivotTo) auf 10 studs über die Ei-Oberkante, dann der ECHTE Pickup-Prompt des Spiels (fireproximityprompt) - genau wie das Referenz-Script. Standardmäßig werden KEINE Remotes gefeuert; 'Direkte Remotes' schaltet den alten Notnagel wieder ein. Shift halten pausiert die Farm sofort, und wenn der Charakter von aussen bewegt wird, pausiert sie 1,5s von selbst.",
 })
 eggsLoopSub:AddButton({
     Name = "1 Ei farmen", Primary = true,
@@ -1753,10 +1748,6 @@ eggsInfoSub:AddButton({
     Callback = safeCallback(function()
         Notify("Eier", string.format("%d Feld-Eier | %d Ei-Tools im Inventar", #EggRecords(), #EggTools()), "Info", 4)
     end)
-})
-eggsInfoSub:AddParagraph({
-    Title = "Ablauf (getestetes Rezept)",
-    Text = "Hin zum Ei (harter TP, 10 studs über der Oberkante) -> Pickup per echtem Spiel-Prompt -> zurück über die eigene Baseplate -> Abgabe gibt Cash. Ohne Prompt wird abgebrochen statt Remotes zu hämmern (siehe 'Direkte Remotes'). Inventar-Eier werden ins freie Nest gepflanzt, reife Eier gehatcht.",
 })
 
 -- ---------------------------------------------------------------- Pets
@@ -1978,10 +1969,6 @@ espSub:AddSlider({
     Name = "Eier: Marker bis (0 = alle)", Min = 0, Max = 8000, Default = 0, Suffix = " studs", Flag = "esp_eggmax",
     Callback = safeCallback(function(v) S.espEggMaxDist = tonumber(v) or 0 RefreshESP() end)
 })
-espSub:AddParagraph({
-    Title = "Egg ESP",
-    Text = "Markiert ALLE ungeclaimten Feld-Eier (Server-Records), auch die der Client gerade nicht zeichnet. Farbe = Rarität, gelber Rahmen = Mutation, Label = Name/Rarität/Distanz.",
-})
 espSub:AddButton({
     Name = "Nächstes Ei anlaufen",
     Callback = safeCallback(function()
@@ -1995,10 +1982,6 @@ espSub:AddButton({
 
 -- ---------------------------------------------------------------- Settings
 local setSub = setTab:AddSubTab("Main")
-setSub:AddParagraph({
-    Title = "Arc HUB | Reite ein Haustier",
-    Text = "PlaceId 124216119978534",
-})
 setSub:AddButton({
     Name = "Config speichern", Primary = true,
     Callback = safeCallback(function()
