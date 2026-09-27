@@ -662,7 +662,7 @@ local function SendDiscordWebhook(url, eggData)
                 description = string.format("Successfully banked **%s** (%s) into your pen.", tostring(eggData.name), tostring(eggData.rarity)),
                 color = color,
                 fields = fields,
-                footer = { text = "Arc HUB • Springen für Tiere!" },
+                footer = { text = "Arc HUB • Jump for Pets!" },
                 timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
             }
         }
