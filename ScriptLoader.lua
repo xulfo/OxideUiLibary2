@@ -45,11 +45,7 @@ local GAME_NAMES = {
 -- ══════════════════════════════════════════════════════════════════════════════
 -- CACHE + STALE-PROTECTION
 -- ══════════════════════════════════════════════════════════════════════════════
--- Marker string that ONLY exists in the current library build: its version
--- line. A stale CDN copy is rejected and refetched. Bump both values together
--- with the library release (Libary.lua: Library.Version).
-local LIB_MIN_VERSION = 2.8
-local LIB_MARKER  = 'Version       = "2.8"'
+local LIB_MARKER  = "ChatFree"   -- marker string that ONLY exists in the current (chat-free) library build
 local CACHE_TTL   = 300          -- seconds a downloaded file is reused before a refresh
 
 -- Session-wide download cache (survives re-executions of this script).
@@ -232,10 +228,7 @@ end
 local function LibraryUsable(lib)
     return type(lib) == "table"
         and type(lib.CreateWindow) == "function"
-        and lib.ChatFree == true               -- only the current chat-free build is accepted
-        and type(lib.SetLanguage) == "function" -- ... and it must know the language API
-        and type(lib.Languages) == "table"
-        and (tonumber(lib.Version) or 0) >= LIB_MIN_VERSION
+        and lib.ChatFree == true      -- only the current chat-free build is accepted
 end
 
 local function LoadLibrary()
