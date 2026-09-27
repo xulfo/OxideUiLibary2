@@ -1117,7 +1117,7 @@ end
 -- LIBRARY
 -- ════════════════════════════════════════════════════════════════════════════
 local Library = {
-    Version       = "2.6",
+    Version       = "2.7",      -- 2.7: Library.Compat bridge (third-party hub scripts) + slider Increment/Format
     ChatFree      = true,      -- marker: this build has no hub chat (used by the loader to reject stale CDN copies)
     Themes        = THEMES,
     Icons         = ICONS,
@@ -4127,17 +4127,32 @@ end
 function SubTab:AddSlider(opts)
     opts=opts or {}
     local mn=opts.Min or 0; local mx=opts.Max or 100; local sf=opts.Suffix or ""
-    local value=math.clamp(opts.Default or mn,mn,mx)
+    -- Optional step size (opts.Increment, e.g. 0.01) for sliders that are not
+    -- whole numbers, plus an optional opts.Format(value) for the read-out.
+    local step=tonumber(opts.Increment); if step and step<=0 then step=nil end
+    local text=opts.Format
+    if step and not text then
+        local decimals=0; local s=step
+        while s<1 and decimals<4 do s=s*10; decimals=decimals+1 end
+        text=function(v) return string.format("%."..decimals.."f",v)..sf end
+    end
+    text=text or function(v) return tostring(v)..sf end
+    local function quantize(v)
+        v=math.clamp(tonumber(v) or mn,mn,mx)
+        if step then return math.clamp(mn+math.floor((v-mn)/step+0.5)*step,mn,mx) end
+        return math.clamp(math.floor(v+0.5),mn,mx)
+    end
+    local value=quantize(opts.Default or mn)
     local row=newRow(self._card,32)
     make("TextLabel",{Text=opts.Name or "Slider",Font=Enum.Font.GothamMedium,TextSize=13,TextColor3=C.White,TextXAlignment=Enum.TextXAlignment.Left,BackgroundTransparency=1,Position=UDim2.fromOffset(0,0),Size=UDim2.new(0.6,0,0,14),Parent=row})
-    local vl=make("TextLabel",{Text=tostring(value)..sf,Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.TextDim,TextXAlignment=Enum.TextXAlignment.Right,BackgroundTransparency=1,Position=UDim2.fromOffset(0,1),Size=UDim2.new(1,0,0,13),Parent=row})
+    local vl=make("TextLabel",{Text=text(value),Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.TextDim,TextXAlignment=Enum.TextXAlignment.Right,BackgroundTransparency=1,Position=UDim2.fromOffset(0,1),Size=UDim2.new(1,0,0,13),Parent=row})
     local track=make("Frame",{Position=UDim2.fromOffset(0,24),Size=UDim2.new(1,0,0,4),BackgroundColor3=C.TrackBg,Parent=row}); circle(track)
     local fill=make("Frame",{Size=UDim2.new(0,0,1,0),BackgroundColor3=C.Accent,Parent=track}); circle(fill)
     local knob=make("Frame",{Size=UDim2.fromOffset(12,12),AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.new(0,0,0.5,0),BackgroundColor3=C.White,ZIndex=2,Parent=track}); circle(knob); stroke(knob,C.Accent)
     local hit=make("TextButton",{Text="",BackgroundTransparency=1,Position=UDim2.new(0,-6,0,16),Size=UDim2.new(1,12,0,20),Parent=row})
     local function apply(v,a,fc)
-        value=math.clamp(math.floor(v+0.5),mn,mx)
-        local pct=mx>mn and (value-mn)/(mx-mn) or 0; vl.Text=tostring(value)..sf
+        value=quantize(v)
+        local pct=mx>mn and (value-mn)/(mx-mn) or 0; vl.Text=text(value)
         if a then tween(fill,{Size=UDim2.new(pct,0,1,0)}); tween(knob,{Position=UDim2.new(pct,0,0.5,0)})
         else fill.Size=UDim2.new(pct,0,1,0); knob.Position=UDim2.new(pct,0,0.5,0) end
         if fc then fire(opts.Callback,value); Library:QueueAutoSave() end
@@ -4314,5 +4329,640 @@ function SubTab:AddComponents(list)
     end
     return handles
 end
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- HUB COMPAT — Arc-native bridge for hub scripts built on other UI kits
+-- ════════════════════════════════════════════════════════════════════════════
+-- Some hub scripts are written against an external UI library that downloads
+-- itself from a third party at runtime (window / tab / section / toggle /
+-- slider / dropdown / text / button / state / canvas API). Instead of shipping
+-- that dependency, this bridge implements the same call shapes on top of OUR
+-- library, so a ported script keeps its own logic and gets Arc widgets, theming
+-- and config auto-save for free.
+--
+--   local Compat = Library.Compat            -- alias: Library.Hub
+--   local v   = Compat
+--   local win = v:CreateWindow({ Name = "...", DefaultTab = "Farm" })
+--   local tab = win:CreateTab({ Name = "Player" })
+--   local sec = tab:CreateSection({ Name = "ESP" })   -- an Arc sub tab (pill)
+--   local tog = sec:CreateToggle({ Name = "...", Default = true, Note = "...", Callback = fn })
+--   tog:Set(true) / tog:Get() / tog:JoinExclusiveGroup(group) / tog:SetActionText("Add")
+--   sec:CreateSlider / CreateDropdown / CreateMultiDropdown / CreateButton /
+--   CreateText / CreateLabel / CreateInput / CreateDivider / CreateCanvas{...}
+--   win:CreateState{ Name = "...", Default = ... } / win:GetState("name")
+--   v:Notify(title, text, seconds) / v:Finalize{...} (no-op, kept for parity)
+--
+-- The canvas API renders the overlay panels (status cards, egg lists, the
+-- Discord panel) as absolutely positioned Arc-styled elements on a line grid:
+-- every X/Y/Width/Height is measured in line units (canvas:Unit()), with
+-- Width == 1 meaning "full width".
+-- ════════════════════════════════════════════════════════════════════════════
+local function buildCompatLayer()
+    local Compat = { Version = "1.0", Name = "ArcCompat" }
+
+    -- ── colours ───────────────────────────────────────────────────────────
+    local function isColor(v)
+        if type(v) == "userdata" then return true end
+        if type(v) == "table" and (rawget(v, "R") ~= nil or (typeof and typeof(v) == "Color3")) then return true end
+        return false
+    end
+
+    local function toColor(v, fallback)
+        if v == nil then return fallback end
+        if isColor(v) then return v end
+        if type(v) == "string" then
+            local hex = string.gsub(v, "#", "")
+            local r = tonumber(string.sub(hex, 1, 2), 16)
+            local g = tonumber(string.sub(hex, 3, 4), 16)
+            local b = tonumber(string.sub(hex, 5, 6), 16)
+            if r and g and b then return Color3.fromRGB(r, g, b) end
+        end
+        return fallback
+    end
+
+    local function toSequence(v)
+        if v == nil then return nil end
+        if type(v) ~= "table" or rawget(v, "Keypoints") ~= nil then return v end
+        local points = {}
+        for i, entry in ipairs(v) do
+            if type(entry) == "table" and entry[2] ~= nil then
+                points[#points + 1] = ColorSequenceKeypoint.new(tonumber(entry[1]) or 0, toColor(entry[2], C.White))
+            elseif isColor(entry) then
+                points[#points + 1] = ColorSequenceKeypoint.new((i - 1) / math.max(#v - 1, 1), entry)
+            end
+        end
+        if #points == 0 then return nil end
+        return ColorSequence.new(points)
+    end
+
+    local function alignOf(v)
+        local s = string.lower(tostring(v or "left"))
+        if string.find(s, "right", 1, true) then return Enum.TextXAlignment.Right end
+        if string.find(s, "center", 1, true) or string.find(s, "centre", 1, true) then return Enum.TextXAlignment.Center end
+        return Enum.TextXAlignment.Left
+    end
+
+    -- ── states ────────────────────────────────────────────────────────────
+    local function newState(name, default)
+        local value = default
+        local listeners = {}
+        local state = { Name = tostring(name or "State") }
+        function state:Get() return value end
+        function state:GetValue() return value end
+        function state:Set(v)
+            value = v
+            for _, fn in ipairs(listeners) do pcall(fn, value) end
+            return value
+        end
+        function state:SetValue(v) return state:Set(v) end
+        function state:Bind(fn)
+            if type(fn) == "function" then table.insert(listeners, fn); pcall(fn, value) end
+            return state
+        end
+        function state:OnChanged(fn) return state:Bind(fn) end
+        return state
+    end
+
+    -- ── exclusive groups (radio behaviour between toggles) ────────────────
+    local function newExclusiveGroup(name, maxActive)
+        local group = { Name = tostring(name or "Group"), MaxActive = tonumber(maxActive) or 1, Members = {} }
+        function group:Join(handle)
+            table.insert(self.Members, handle)
+            handle._exclusive = self
+            return handle
+        end
+        function group:Enforce(active)
+            if self._busy then return end
+            self._busy = true
+            for _, handle in ipairs(self.Members) do
+                if handle ~= active then
+                    local on = false
+                    pcall(function() on = handle:Get() == true end)
+                    if on then pcall(function() handle:Set(false) end) end
+                end
+            end
+            self._busy = false
+        end
+        return group
+    end
+
+    -- ── widget wrapping ───────────────────────────────────────────────────
+    local function childSet(frame)
+        local set = {}
+        for _, child in ipairs(frame:GetChildren()) do set[child] = true end
+        return set
+    end
+
+    local function newRows(card, before)
+        local out = {}
+        for _, child in ipairs(card:GetChildren()) do
+            if not before[child] then out[#out + 1] = child end
+        end
+        return out
+    end
+
+    local TEXT_KINDS = { text = true, label = true, paragraph = true }
+
+    local function wrapWidget(handle, kind, card, before)
+        -- Some Arc widgets return a handle table (toggle/slider/dropdown) and
+        -- some return the Instance itself (button). Normalise both to a handle
+        -- table so scripts can call Set/Get/SetActionText on either.
+        local isInstance = handle ~= nil and (typeof(handle) == "Instance"
+            or (handle.ClassName ~= nil and type(handle.IsA) == "function"))
+        local api
+        if isInstance then api = { Instance = handle }
+        elseif type(handle) == "table" then api = handle
+        else return handle end
+        local instance = api.Instance or newRows(card, before or {})[1]
+        handle = api
+        local baseSet, baseGet = handle.Set, handle.Get
+
+        handle._kind = kind
+        handle.Instance = instance
+        handle.Get = function(self)
+            if baseGet then return baseGet(self) end
+        end
+        handle.Set = function(self, v)
+            if type(v) == "table" then
+                if kind == "multidropdown" then
+                    -- a table IS the value here (list of selected options)
+                    if baseSet then baseSet(self, v) end
+                    return self
+                end
+                if TEXT_KINDS[kind] or v.Text ~= nil then
+                    if baseSet then baseSet(self, v.Text or v.Content or "") end
+                elseif v.Value ~= nil or v.On ~= nil or v.State ~= nil then
+                    if baseSet then baseSet(self, v.Value ~= nil and v.Value or (v.On ~= nil and v.On or v.State)) end
+                end
+                if instance and v.Visible ~= nil then instance.Visible = v.Visible == true end
+                return self
+            end
+            if kind == "toggle" and v ~= nil then v = (v == true or v == "true" or v == 1) end
+            if baseSet then baseSet(self, v) end
+            if kind == "toggle" and v == true and self._exclusive then self._exclusive:Enforce(self) end
+            return self
+        end
+        handle.JoinExclusiveGroup = function(self, group)
+            if type(group) == "table" and type(group.Join) == "function" then group:Join(self) end
+            return self
+        end
+        handle.SetVisible = function(self, v)
+            if instance then instance.Visible = v == true end
+            return self
+        end
+        handle.SetActionText = function(self, text)
+            if instance and (instance:IsA("TextButton") or instance:IsA("TextLabel")) then
+                instance.Text = tostring(text or "")
+            end
+            return self
+        end
+        handle.Destroy = function(self)
+            if instance and instance.Parent then instance:Destroy() end
+        end
+        return handle
+    end
+
+    -- ── canvas (free-form overlay panels) ─────────────────────────────────
+    local function canvasMetrics(style)
+        style = style or {}
+        local scale = tonumber(style.TextScale) or 1
+        local lineHeight = tonumber(style.LineHeight) or 1.1
+        return math.clamp(math.floor(13 * scale * lineHeight + 0.5), 11, 30),
+            math.clamp(math.floor(12 * scale + 0.5), 9, 20)
+    end
+
+    local function newCanvas(parent, opts)
+        local style = opts.Style or {}
+        local unit, font = canvasMetrics(style)
+        local lines = math.max(1, math.ceil(tonumber(style.MinLines) or 4))
+        local maxLines = math.max(lines, math.ceil(tonumber(style.MaxLines) or lines))
+
+        local holder = make("Frame", {
+            Name = "Canvas",
+            Size = UDim2.new(1, 0, 0, lines * unit),
+            BackgroundColor3 = C.CardBg,
+            BackgroundTransparency = 1,
+            ClipsDescendants = true,
+            Parent = parent,
+        })
+        autoOrder(holder)
+        corner(holder, 8)
+
+        local canvas = { _frame = holder, _unit = unit, _font = font, _lines = lines, _maxLines = maxLines }
+        local resolvedChildren = {}
+
+        local function resolveParent(p)
+            if p == nil then return holder end
+            if type(p) == "table" then
+                if p.__canvasChild then return p.Instance end
+                return nil
+            end
+            return p
+        end
+
+        local function applyTo(inst, props, initial)
+            local w = props.Width
+            local widthPx
+            if w == nil then widthPx = nil
+            elseif tonumber(w) == 1 then widthPx = -1
+            else widthPx = math.max(0, math.floor((tonumber(w) or 0) * unit + 0.5)) end
+            local hPx = math.max(2, math.floor((tonumber(props.Height) or 1) * unit + 0.5))
+            if props.X ~= nil or props.Y ~= nil then
+                local x = math.floor((tonumber(props.X) or 0) * unit + 0.5)
+                local y = math.floor((tonumber(props.Y) or 0) * unit + 0.5)
+                inst.Position = UDim2.fromOffset(x, y)
+            end
+            local isText = inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox")
+            local wrapped = props.Wrap == true
+            if widthPx == nil and isText and not wrapped then
+                -- no width given: let the text grow to its own length
+                inst.AutomaticSize = Enum.AutomaticSize.X
+                inst.Size = UDim2.new(0, 0, 0, hPx)
+            elseif widthPx == nil or widthPx == -1 then
+                inst.Size = UDim2.new(1, 0, 0, hPx)
+            else
+                inst.Size = UDim2.fromOffset(widthPx, hPx)
+            end
+            if props.Text ~= nil and isText then inst.Text = tostring(props.Text) end
+            if props.Color ~= nil and isText then inst.TextColor3 = toColor(props.Color, C.White) end
+            if props.Scale ~= nil and isText then inst.TextSize = math.max(6, math.floor(font * (tonumber(props.Scale) or 1) + 0.5)) end
+            if props.Wrap ~= nil and isText then inst.TextWrapped = props.Wrap == true end
+            if props.Align ~= nil and isText then inst.TextXAlignment = alignOf(props.Align) end
+            if props.Font ~= nil and isText then inst.Font = props.Font end
+            if props.TextStrokeTransparency ~= nil and isText then inst.TextStrokeTransparency = tonumber(props.TextStrokeTransparency) end
+            if props.Background ~= nil then inst.BackgroundColor3 = toColor(props.Background, inst.BackgroundColor3) end
+            if props.BackgroundTransparency ~= nil then inst.BackgroundTransparency = tonumber(props.BackgroundTransparency) end
+            if props.Image ~= nil and inst:IsA("ImageLabel") then inst.Image = tostring(props.Image) end
+            if props.ImageTransparency ~= nil and inst:IsA("ImageLabel") then inst.ImageTransparency = tonumber(props.ImageTransparency) end
+            if props.ZIndex ~= nil then inst.ZIndex = tonumber(props.ZIndex) end
+            if props.Visible ~= nil then inst.Visible = props.Visible == true end
+            if props.Corner ~= nil then
+                local radius = math.floor((tonumber(props.Corner) or 0) * unit + 0.5)
+                local corners = inst:FindFirstChildOfClass("UICorner")
+                if not corners then corners = make("UICorner", { Parent = inst }) end
+                corners.CornerRadius = UDim.new(0, radius)
+            end
+            if props.StrokeThickness ~= nil or props.StrokeColor ~= nil or props.StrokeTransparency ~= nil then
+                local outline = inst:FindFirstChildOfClass("UIStroke")
+                if not outline then outline = make("UIStroke", { Color = C.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = inst }) end
+                outline:SetAttribute("Theme_Color", nil)
+                if props.StrokeColor ~= nil then outline.Color = toColor(props.StrokeColor, C.Border) end
+                if props.StrokeThickness ~= nil then outline.Thickness = math.max(0.4, (tonumber(props.StrokeThickness) or 0) * unit) end
+                if props.StrokeTransparency ~= nil then outline.Transparency = tonumber(props.StrokeTransparency) end
+            end
+            if props.Gradient ~= nil then
+                local grad = inst:FindFirstChildOfClass("UIGradient")
+                local seq = toSequence(props.Gradient)
+                if seq then
+                    if not grad then grad = make("UIGradient", { Parent = inst }) end
+                    grad.Color = seq
+                    grad.Rotation = tonumber(props.GradientRotation) or 0
+                end
+            elseif props.GradientRotation ~= nil then
+                local grad = inst:FindFirstChildOfClass("UIGradient")
+                if grad then grad.Rotation = tonumber(props.GradientRotation) or 0 end
+            end
+        end
+
+        local function newChild(kind, props)
+            props = props or {}
+            local parent = resolveParent(props.Parent) or holder
+            local inst
+            if kind == "frame" then
+                inst = make("Frame", { Name = props.Name or "Frame", BackgroundColor3 = C.Element, BackgroundTransparency = 0, Parent = parent })
+            elseif kind == "text" then
+                inst = make("TextLabel", { Name = props.Name or "Text", Text = "", RichText = true, Font = Enum.Font.Gotham, TextSize = font, TextColor3 = C.White, BackgroundTransparency = 1, Parent = parent })
+            elseif kind == "image" then
+                inst = make("ImageLabel", { Name = props.Name or "Image", BackgroundColor3 = C.Element, BackgroundTransparency = 0, Parent = parent })
+            elseif kind == "button" then
+                inst = make("TextButton", { Name = props.Name or "Button", Text = "", RichText = true, Font = Enum.Font.Gotham, TextSize = font, TextColor3 = C.White, BackgroundColor3 = C.Element, Parent = parent })
+            end
+            if props.Name ~= nil then inst.Name = tostring(props.Name) end
+            applyTo(inst, props, true)
+            if props.Visible == nil then inst.Visible = true end
+
+            local handle = { __canvasChild = true, Instance = inst, Name = inst.Name }
+            local function setProps(self, list)
+                if type(list) ~= "table" then return self end
+                if list.Parent ~= nil then
+                    local p = resolveParent(list.Parent)
+                    if p then inst.Parent = p end
+                end
+                applyTo(inst, list, false)
+                return self
+            end
+            handle.Set = setProps
+            handle.set = function(self) return self end
+            function handle:Destroy() if inst.Parent then inst:Destroy() end end
+            function handle:Show(v) inst.Visible = v ~= false end
+            if inst:IsA("TextButton") then
+                if props.Callback then inst.MouseButton1Click:Connect(function() fire(props.Callback) end) end
+                local base = inst.BackgroundTransparency
+                local hover = props.HoverTransparency
+                local press = props.PressTransparency
+                if hover or press then
+                    inst.MouseEnter:Connect(function() if hover then tween(inst, { BackgroundTransparency = tonumber(hover) }) end end)
+                    inst.MouseLeave:Connect(function() tween(inst, { BackgroundTransparency = base }) end)
+                    if press then
+                        inst.MouseButton1Down:Connect(function() tween(inst, { BackgroundTransparency = tonumber(press) }) end)
+                        inst.MouseButton1Up:Connect(function() tween(inst, { BackgroundTransparency = hover and tonumber(hover) or base }) end)
+                    end
+                end
+            end
+            table.insert(resolvedChildren, handle)
+            return handle
+        end
+
+        function canvas:Frame(props) return newChild("frame", props) end
+        function canvas:Text(props) return newChild("text", props) end
+        function canvas:Image(props) return newChild("image", props) end
+        function canvas:Button(props) return newChild("button", props) end
+        function canvas:Label(props) return newChild("text", props) end
+        function canvas:Unit() return unit end
+        function canvas:TextSize() return font end
+        function canvas:Width() return holder.AbsoluteSize.X end
+        function canvas:Height() return holder.AbsoluteSize.Y end
+        function canvas:Lines() return canvas._lines end
+        function canvas:FrameInstance() return holder end
+        function canvas:SetContentLines(n)
+            n = math.max(1, tonumber(n) or canvas._lines)
+            if math.abs(n - canvas._lines) < 0.01 then return end
+            canvas._lines = n
+            tween(holder, { Size = UDim2.new(1, 0, 0, math.ceil(n) * unit) })
+        end
+        function canvas:SetTitle(text) end
+        function canvas:SetDock(mode, o)
+            mode = tonumber(mode) or 0
+            if mode > 0 then
+                if not canvas._dock then
+                    canvas._dock = make("Frame", { Name = "Dock", Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Parent = holder })
+                end
+                canvas._dock.Visible = true
+                if type(o) == "table" and o.DividerColor then
+                    if not canvas._dockLine then canvas._dockLine = make("Frame", { Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = toColor(o.DividerColor, C.Border), Parent = canvas._dock }) end
+                    canvas._dockLine.Visible = true
+                elseif canvas._dockLine then
+                    canvas._dockLine.Visible = false
+                end
+            elseif canvas._dock then
+                canvas._dock.Visible = false
+            end
+        end
+        function canvas:Dock()
+            if canvas._dock then return canvas._dock end
+            return holder
+        end
+        function canvas:OnResize(fn)
+            if type(fn) ~= "function" then return end
+            canvas._resize = fn
+            if not canvas._resizeConn then
+                canvas._resizeConn = holder:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+                    local size = holder.AbsoluteSize
+                    pcall(canvas._resize, canvas, size.X, size.Y)
+                end)
+            end
+            task.defer(function()
+                local size = holder.AbsoluteSize
+                pcall(fn, canvas, size.X, size.Y)
+            end)
+        end
+        function canvas:Destroy()
+            if canvas._resizeConn then pcall(function() canvas._resizeConn:Disconnect() end) end
+            if holder.Parent then holder:Destroy() end
+        end
+
+        if type(opts.Build) == "function" then
+            local ok, err = pcall(opts.Build, canvas)
+            if not ok then
+                pcall(function() warn("[ArcCompat] canvas build failed: " .. tostring(err)) end)
+            end
+        end
+        return canvas
+    end
+
+    -- ── sections (Arc sub tabs) ───────────────────────────────────────────
+    local function slug(text)
+        local out = string.lower(tostring(text or "x")):gsub("[^%w]+", "_")
+        out = string.gsub(out, "^_+", "")
+        out = string.gsub(out, "_+$", "")
+        if out == "" then out = "widget" end
+        if #out > 28 then out = string.sub(out, 1, 28) end
+        return out
+    end
+
+    local function newSection(arcTab, name, context)
+        local sub = arcTab:AddSubTab(name)
+        local section = { Name = name, Sub = sub, _canvases = {}, _count = 0, _context = context }
+        local card = sub._card
+        -- Every value widget gets a stable Arc flag, so the Arc config saver
+        -- persists the port's settings exactly like it does for our own scripts.
+        local function autoFlag(o, kind)
+            if type(o.Flag) == "string" and o.Flag ~= "" then return o.Flag end
+            section._count = section._count + 1
+            return "sae/" .. context .. "/" .. slug(o.Name) .. "/" .. section._count
+        end
+
+        function section:CreateToggle(o)
+            o = o or {}
+            local before = childSet(card)
+            local handle = sub:AddToggle({ Name = o.Name or "Toggle", Description = o.Note, Default = o.Default == true, Callback = o.Callback, Flag = autoFlag(o, "toggle") })
+            return wrapWidget(handle, "toggle", card, before)
+        end
+        function section:CreateSlider(o)
+            o = o or {}
+            local before = childSet(card)
+            local handle = sub:AddSlider({
+                Name = o.Name or "Slider", Description = o.Note,
+                Min = tonumber(o.Min) or 0, Max = tonumber(o.Max) or 100,
+                Default = tonumber(o.Default) or 0,
+                Increment = tonumber(o.Increment),
+                Suffix = type(o.Unit) == "string" and (" " .. o.Unit) or nil,
+                Format = type(o.ValueFormat) == "function" and o.ValueFormat or nil,
+                Callback = o.Callback, Flag = autoFlag(o, "slider"),
+            })
+            return wrapWidget(handle, "slider", card, before)
+        end
+        function section:CreateDropdown(o)
+            o = o or {}
+            local before = childSet(card)
+            local handle = sub:AddDropdown({ Name = o.Name or "Dropdown", Description = o.Note, Options = o.Options, Default = o.Default, Callback = o.Callback, Flag = autoFlag(o, "dropdown") })
+            return wrapWidget(handle, "dropdown", card, before)
+        end
+        function section:CreateMultiDropdown(o)
+            o = o or {}
+            local before = childSet(card)
+            local handle = sub:AddMultiDropdown({ Name = o.Name or "Dropdown", Description = o.Note, Options = o.Options, Default = o.Default, Callback = o.Callback, Flag = autoFlag(o, "multidropdown") })
+            return wrapWidget(handle, "multidropdown", card, before)
+        end
+        function section:CreateText(o)
+            if type(o) == "string" then o = { Text = o } end
+            o = o or {}
+            local before = childSet(card)
+            local handle = sub:AddLabel({ Text = "" })
+            -- The original API shows the row name once and lets the script update
+            -- the value with :Set("...") - keep that split so the label stays
+            -- readable instead of turning into the raw value.
+            local name = o.Name and tostring(o.Name) or ""
+            local value = tostring(o.Text or "")
+            local instance = handle.Instance
+            if instance then
+                local function render() instance.Text = (name ~= "" and (name .. "  ") or "") .. value end
+                render()
+                handle.Set = function(self, v)
+                    if type(v) == "table" then v = v.Text ~= nil and v.Text or v.Content or "" end
+                    value = tostring(v)
+                    render()
+                    return self
+                end
+                handle.Get = function() return value end
+                handle.SetText = handle.Set
+            end
+            handle._rowName = name
+            return wrapWidget(handle, "text", card, before)
+        end
+        function section:CreateLabel(o)
+            if type(o) == "string" then o = { Text = o } end
+            o = o or {}
+            local before = childSet(card)
+            local handle = sub:AddLabel({ Text = tostring(o.Text or o.Name or "") })
+            return wrapWidget(handle, "label", card, before)
+        end
+        function section:CreateButton(o)
+            o = o or {}
+            local before = childSet(card)
+            local handle = sub:AddButton({ Name = o.Name or o.ButtonText or "Button", Callback = o.Callback, Primary = o.Primary == true })
+            local wrapped = wrapWidget(handle, "button", card, before)
+            if wrapped.Instance and wrapped.Instance:IsA("TextButton") then
+                wrapped.Instance.Text = tostring(o.ButtonText or o.Name or "Button")
+            end
+            return wrapped
+        end
+        function section:CreateInput(o)
+            o = o or {}
+            local before = childSet(card)
+            local handle = sub:AddInput({ Name = o.Name or "Input", Description = o.Note, Default = o.Default, Placeholder = o.Placeholder, Callback = o.Callback, Flag = autoFlag(o, "input") })
+            return wrapWidget(handle, "input", card, before)
+        end
+        function section:CreateDivider() return sub:AddDivider() end
+        function section:CreateCanvas(o)
+            o = o or {}
+            local canvas = newCanvas(card, o)
+            table.insert(section._canvases, canvas)
+            return canvas
+        end
+        function section:Destroy()
+            for _, canvas in ipairs(section._canvases) do pcall(function() canvas:Destroy() end) end
+        end
+        return section
+    end
+
+    -- ── window ────────────────────────────────────────────────────────────
+    local function firstTable(a, b)
+        if a == Compat then return b end
+        if type(a) == "table" then return a end
+        return b
+    end
+
+    function Compat.CreateWindow(a, b)
+        local opts = firstTable(a, b) or {}
+        -- A previous run of the same hub script leaves a cleanup function behind;
+        -- call it so its connections, overlays and UI are gone before the new build.
+        pcall(function()
+            local cleanup = rawget(_G, "ChilliHubSaeCleanup")
+            if type(cleanup) == "function" then cleanup() end
+        end)
+
+        local arc = Library:CreateWindow({
+            Name = tostring(opts.Name or "Arc HUB"),
+            Size = opts.Size or UDim2.fromOffset(760, 520),
+            LoadingAnimation = true, LoadingText = "Arc", LoadingDuration = 1.6,
+        })
+
+        local win = { ArcWindow = arc, _tabs = {}, _byName = {}, _states = {}, _default = nil }
+        win._defaultName = opts.DefaultTab
+        win._context = slug(opts.Context or opts.Name or "hub")
+
+        local function stateFor(name, default)
+            local key = tostring(name)
+            local state = win._states[key]
+            if not state then state = newState(key, default); win._states[key] = state end
+            return state
+        end
+
+        function win:CreateState(o)
+            o = o or {}
+            local key = tostring(o.Name or "State")
+            if win._states[key] then
+                if o.Default ~= nil then win._states[key]:Set(o.Default) end
+                return win._states[key]
+            end
+            return stateFor(key, o.Default)
+        end
+        function win:GetState(name) return win._states[tostring(name)] end
+        function win:CreateExclusiveGroup(o)
+            o = o or {}
+            return newExclusiveGroup(o.Name, o.MaxActive)
+        end
+        function win:CreateTab(o)
+            o = o or {}
+            local name = tostring(o.Name or ("Tab " .. tostring(#win._tabs + 1)))
+            if win._byName[name] then return win._byName[name] end
+            local arcTab = arc:AddTab(name)
+            local tab = { Name = name, ArcTab = arcTab, _sections = {}, _byName = {} }
+            function tab:CreateSection(so)
+                so = so or {}
+                local sname = tostring(so.Name or ("Section " .. tostring(#tab._sections + 1)))
+                if tab._byName[sname] then return tab._byName[sname] end
+                local section = newSection(arcTab, sname, win._context .. "/" .. slug(sname))
+                table.insert(tab._sections, section)
+                tab._byName[sname] = section
+                return section
+            end
+            table.insert(win._tabs, tab)
+            win._byName[name] = tab
+            if not win._default then win._default = tab end
+            return tab
+        end
+        function win:GetDefaultTab()
+            if win._defaultName and win._byName[tostring(win._defaultName)] then return win._byName[tostring(win._defaultName)] end
+            return win._default
+        end
+        function win:SelectTab(name)
+            local tab = win._byName[tostring(name)]
+            if tab and tab.ArcTab and tab.ArcTab.Select then pcall(function() tab.ArcTab:Select() end) end
+            return tab
+        end
+        function win:Notify(...) return Compat.Notify(...) end
+        function win:SetVisible(v) return arc:SetVisible(v) end
+        function win:Toggle() return arc:Toggle() end
+        function win:ToggleUI() return arc:ToggleUI() end
+        function win:Destroy() return arc:Destroy() end
+        win.Window = arc
+        win.Handle = arc
+
+        -- the default tab exists right away, exactly like the original API
+        win:CreateTab({ Name = opts.DefaultTab or "Main" })
+        win._default = win._tabs[1]
+        return win
+    end
+
+    -- ── library-level calls ───────────────────────────────────────────────
+    function Compat.Notify(a, b, c)
+        if a == Compat then a, b, c = b, c, nil end
+        local ok, result = pcall(function()
+            return Library:Notify({ Title = a and tostring(a) or "Arc HUB", Content = b and tostring(b) or tostring(a or ""), Duration = tonumber(c) or 4 })
+        end)
+        return ok and result or nil
+    end
+    function Compat.Notification(...) return Compat.Notify(...) end
+    function Compat.Finalize() end
+    function Compat.Destroy() end
+    Compat.ManualQuickDefaults = { PinnedFeatures = {}, Keybinds = {}, PinGroups = {}, LeftCenterHidden = false }
+
+    return Compat
+end
+
+Library.Compat = buildCompatLayer()
+Library.Hub = Library.Compat
 
 return Library
