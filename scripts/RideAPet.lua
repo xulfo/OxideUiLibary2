@@ -9,7 +9,7 @@ do
     local prev = _G.ArcRideAPet
     if prev and type(prev.Unload) == "function" then pcall(prev.Unload) end
 end
-local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.6" }
+local HUB = { conns = {}, drawings = {}, highlights = {}, dead = false, version = "1.7" }
 _G.ArcRideAPet = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 local function trackDrawing(d) if d then table.insert(HUB.drawings, d) end; return d end
@@ -109,7 +109,8 @@ local S = {
     maxEggTravel = 0,               -- unbenutzt: kein Distanzlimit mehr (Instant-TP)
     pickupRetries = 8,              -- Versuche pro Ei (Server-Positions-Lag)
     deliverDelay = 0,               -- Pause nach dem Pickup, bevor es heim zur Basis geht (0 = sofort)
-    useRemotes = true,              -- EggPickup/EggArrivalClaim direkt feuern = instant (keine Prompt-Hold-Zeit)
+    useRemotes = true,              -- fest an: EggPickup/EggArrivalClaim werden immer direkt gefeuert
+
     usePrompt = false,              -- zusaetzlich den echten ProximityPrompt feuern (kostet dessen Hold-Dauer)
     -- Pet loop
     petLoop = false,
@@ -428,10 +429,9 @@ local function PickTargetEgg()
             -- Limit (gespeicherte 978 studs) liess nur noch nahe Common-Eier uebrig.
             local maxTravel = 0
             if maxTravel <= 0 or travel <= maxTravel then
-                -- "Claimbar" (gerendert + Prompt) nur bevorzugen, wenn wir den Prompt
-                -- wirklich nutzen. Mit dem Instant-Remote zaehlt der Wert allein - sonst
-                -- gewinnen immer die vielen Common-Eier, die gerade gerendert sind.
-                local claimable = ((not S.useRemotes) or S.usePrompt) and Claimable(egg) or false
+                -- "Claimbar" (gerendert + Prompt) zaehlt nur, wenn wir den Prompt auch
+                -- wirklich mitfeuern. Mit dem Instant-Remote zaehlt der Wert allein.
+                local claimable = S.usePrompt and Claimable(egg) or false
                 local value = RarityRank(egg.rarity) * 1000 + egg.luck + egg.sell * 10
                 local score
                 if S.eggPriority == "Nearest" then
@@ -475,7 +475,7 @@ local function CollectEgg(egg, tries)
     local remote = EggPickupRemote()
     -- SOFORT claimen: Remote zuerst (eine Anfrage, keine Hold-Zeit)
     local function Claim()
-        if S.useRemotes and remote then
+        if remote then
             pcall(function() remote:FireServer(egg.id) end)
             lastPickup.method = "Remote (instant)"
         end
@@ -534,7 +534,7 @@ local function DeliverCarried()
     -- Claim SOFORT selbst feuern (statt auf den Spiel-Client zu warten), mit
     -- wenigen Nachschlägen - die Position ist beim Server nach dem TP einen
     -- Moment alt, deshalb wird wiederholt statt nur einmal.
-    local claim = S.useRemotes and ArrivalClaimRemote() or nil
+    local claim = ArrivalClaimRemote()
     local names = {}
     for _, c in ipairs(CarriedEggs()) do names[#names + 1] = c.Name end
     for _ = 1, 8 do
@@ -719,8 +719,7 @@ local function HatchEgg(egg)
         end
         return FirePrompt(prompt), "prompt"
     end
-    -- Nur auf Wunsch: Remote direkt
-    if not S.useRemotes then return false, "kein Hatch-Prompt" end
+    -- Kein Prompt da: Hatch-Remote direkt feuern
     local key = egg:GetAttribute("EggKey")
     if not key then return false, "kein EggKey" end
     local remote = Remote("Hatch")
@@ -802,7 +801,7 @@ local function PetCollectPrompt(pet)
 end
 
 local function CollectPetEarnings()
-    local remote = S.useRemotes and Remote("PetCollect") or nil
+    local remote = Remote("PetCollect")
     local n = 0
     for _, pet in ipairs(OwnPlotPets()) do
         local prompt = PetCollectPrompt(pet)
@@ -1665,10 +1664,6 @@ eggsLoopSub:AddSlider({
 eggsLoopSub:AddSlider({
     Name = "Pflanzen/Hatch alle", Min = 0, Max = 30, Default = 3, Suffix = "s", Flag = "eggs_sideinterval",
     Callback = safeCallback(function(v) S.sideInterval = tonumber(v) or 3 end)
-})
-eggsLoopSub:AddToggle({
-    Name = "Instant-Claim (Remotes)", Default = true, Flag = "eggs_useremotes",
-    Callback = safeCallback(function(v) S.useRemotes = v end)
 })
 eggsLoopSub:AddToggle({
     Name = "Prompt mitfeuern (Hold-Zeit)", Default = false, Flag = "eggs_useprompt",
