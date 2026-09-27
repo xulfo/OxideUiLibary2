@@ -14,7 +14,7 @@ _G.ArcLeafSim = HUB
 local function track(conn) table.insert(HUB.conns, conn); return conn end
 
 local Window = Library:CreateWindow({
-    Name = "Arc HUB | 🍂 Spiel",
+    Name = "Arc HUB | Leaf Simulator",
     LoadingAnimation = true,
     LoadingText = "Arc",
     LoadingDuration = 2.2,
