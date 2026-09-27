@@ -108,7 +108,7 @@ local S = {
     hatchDelay = 1.0,
     maxEggTravel = 0,               -- unused: no distance limit any more (instant TP)
     volcanicLairPath = true,        -- Volcanic Eggs: enter the lair through its door first
-    lairSettle = 0.6,               -- how long the server may take to see us inside the lair
+    lairSettle = 1.0,               -- how long the server may take to see us inside the lair
     pickupRetries = 8,              -- attempts per egg (server position lag)
     deliverDelay = 0,               -- pause after the pickup before heading home (0 = instant)
     useRemotes = true,              -- hard wired: EggPickup/EggArrivalClaim are always fired directly
@@ -606,13 +606,22 @@ local function CollectEgg(egg, tries)
             end
         end
         -- 2) claim: for the Volcanic Egg the server has to count us as inside the
-        -- lair, so give its own position copy a moment before claiming.
+        -- lair (it sets InVolcano for a moment and the lair pushes us back out),
+        -- so stay on the egg and only claim once the server's marker is on.
         if volcanic then
-            local waited = 0
-            local settle = tonumber(S.lairSettle) or 0.6
+            local waited, sinceTp = 0, 0
+            local settle = tonumber(S.lairSettle) or 1.0
+            local target = (rendered and EggTopCFrame(rendered.model))
+                or CFrame.new(egg.pos + Vector3.new(0, EGG_HEIGHT_OFFSET, 0))
             while waited < settle and not ServerSeesInsideLair() and not HUB.dead do
                 task.wait(0.05)
                 waited = waited + 0.05
+                sinceTp = sinceTp + 0.05
+                if sinceTp >= 0.2 then
+                    -- the lair throws us out - place us back onto the egg
+                    sinceTp = 0
+                    TravelToCFrame(target)
+                end
             end
         end
         Claim()
